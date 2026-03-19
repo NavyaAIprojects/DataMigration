@@ -16,6 +16,9 @@ jobs:
   deploy-backend:
     name: Build & Deploy Backend
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
       - name: Checkout code
@@ -24,7 +27,8 @@ jobs:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          workload_identity_provider: projects/183477927397/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: github-deploy@project-8d605884-d3bc-4114-8ea.iam.gserviceaccount.com
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
@@ -68,6 +72,9 @@ jobs:
     name: Build & Deploy Frontend
     runs-on: ubuntu-latest
     needs: deploy-backend
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
       - name: Checkout code
@@ -76,7 +83,8 @@ jobs:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          workload_identity_provider: projects/183477927397/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: github-deploy@project-8d605884-d3bc-4114-8ea.iam.gserviceaccount.com
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2

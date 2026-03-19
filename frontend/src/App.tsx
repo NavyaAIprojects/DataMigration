@@ -7,6 +7,18 @@ const API = process.env.REACT_APP_API_URL || "http://localhost:8000/api";
 type DbType = "mssql" | "databricks";
 type ConnectionStatus = "idle" | "testing" | "connected" | "failed";
 
+interface AgentInfo {
+  agent_id: string;
+  display_name: string;
+  agent_type: string;
+  status: string;
+  progress: number;
+  message: string;
+  started_at?: string;
+  completed_at?: string;
+  error?: string;
+}
+
 interface MigrationJob {
   job_id: string;
   status: string;
@@ -18,6 +30,7 @@ interface MigrationJob {
   start_time?: string;
   end_time?: string;
   stats?: Record<string, any>;
+  agents?: Record<string, AgentInfo>;
 }
 
 function App() {
@@ -34,6 +47,7 @@ function App() {
   const [resetStatus, setResetStatus] = useState<"idle" | "resetting" | "done">("idle");
   const [history, setHistory] = useState<any[]>([]);
   const [elapsed, setElapsed] = useState<string>("00:00:00");
+  const [showCompletedTables, setShowCompletedTables] = useState(false);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startTimeRef = useRef<number | null>(null);
@@ -46,21 +60,15 @@ function App() {
     return [h, m, s].map((v) => String(v).padStart(2, "0")).join(":");
   };
 
-  // Live timer during migration
   useEffect(() => {
     if (migrationJob?.status === "running" || migrationJob?.status === "pending") {
       if (!startTimeRef.current) startTimeRef.current = Date.now();
       timerRef.current = setInterval(() => {
-        if (startTimeRef.current) {
-          setElapsed(formatDuration(Date.now() - startTimeRef.current));
-        }
+        if (startTimeRef.current) setElapsed(formatDuration(Date.now() - startTimeRef.current));
       }, 1000);
-      return () => {
-        if (timerRef.current) clearInterval(timerRef.current);
-      };
+      return () => { if (timerRef.current) clearInterval(timerRef.current); };
     } else if (migrationJob?.status === "completed" || migrationJob?.status === "failed") {
       if (timerRef.current) clearInterval(timerRef.current);
-      // Compute final duration from backend times
       if (migrationJob.start_time && migrationJob.end_time) {
         const start = new Date(migrationJob.start_time).getTime();
         const end = new Date(migrationJob.end_time).getTime();
@@ -70,95 +78,55 @@ function App() {
   }, [migrationJob?.status, migrationJob?.start_time, migrationJob?.end_time]);
 
   const fetchHistory = useCallback(async () => {
-    try {
-      const resp = await axios.get(`${API}/migration-history`);
-      setHistory(resp.data);
-    } catch { /* ignore */ }
+    try { const resp = await axios.get(`${API}/migration-history`); setHistory(resp.data); } catch {}
   }, []);
 
   useEffect(() => { fetchHistory(); }, [fetchHistory]);
 
   const resetTarget = async () => {
-    if (!envFile) {
-      setError("Please upload the .env file first");
-      return;
-    }
-    if (!window.confirm("This will DELETE ALL data from the target Databricks catalog. Are you sure?")) {
-      return;
-    }
-    setResetStatus("resetting");
-    setError("");
+    if (!envFile) { setError("Please upload the .env file first"); return; }
+    if (!window.confirm("This will DELETE ALL data from the target Databricks catalog. Are you sure?")) return;
+    setResetStatus("resetting"); setError("");
     try {
       const formData = new FormData();
       formData.append("env_file", envFile);
       const resp = await axios.post(`${API}/reset-target`, formData);
-      setResetStatus("done");
-      setTargetInfo(null);
-      setTargetStatus("idle");
-      setMigrationJob(null);
-      startTimeRef.current = null;
-      setElapsed("00:00:00");
+      setResetStatus("done"); setTargetInfo(null); setTargetStatus("idle");
+      setMigrationJob(null); startTimeRef.current = null; setElapsed("00:00:00");
       setTimeout(() => setResetStatus("idle"), 3000);
       alert(resp.data.message);
-    } catch (e: any) {
-      setResetStatus("idle");
-      setError(e.response?.data?.detail || e.message);
-    }
+    } catch (e: any) { setResetStatus("idle"); setError(e.response?.data?.detail || e.message); }
   };
 
   const testConnection = async (dbType: DbType) => {
-    if (!envFile) {
-      setError("Please upload the .env file first");
-      return;
-    }
+    if (!envFile) { setError("Please upload the .env file first"); return; }
     const setter = dbType === "mssql" ? setSourceStatus : setTargetStatus;
     const infoSetter = dbType === "mssql" ? setSourceInfo : setTargetInfo;
-    setter("testing");
-    setError("");
-
+    setter("testing"); setError("");
     try {
       const formData = new FormData();
       formData.append("env_file", envFile);
       formData.append("db_type", dbType);
       const resp = await axios.post(`${API}/test-connection`, formData);
-      if (resp.data.connected) {
-        setter("connected");
-        infoSetter(resp.data.info);
-      } else {
-        setter("failed");
-        setError(resp.data.error || "Connection failed");
-      }
-    } catch (e: any) {
-      setter("failed");
-      setError(e.message);
-    }
+      if (resp.data.connected) { setter("connected"); infoSetter(resp.data.info); }
+      else { setter("failed"); setError(resp.data.error || "Connection failed"); }
+    } catch (e: any) { setter("failed"); setError(e.message); }
   };
 
   const startMigration = async () => {
-    if (!envFile) {
-      setError("Please upload the .env file");
-      return;
-    }
+    if (!envFile) { setError("Please upload the .env file"); return; }
     setError("");
     try {
       const formData = new FormData();
       formData.append("env_file", envFile);
-      if (humanDecisionsFile) {
-        formData.append("human_decisions_file", humanDecisionsFile);
-      }
+      if (humanDecisionsFile) formData.append("human_decisions_file", humanDecisionsFile);
       const resp = await axios.post(`${API}/start-migration`, formData);
       setMigrationJob({
-        job_id: resp.data.job_id,
-        status: "running",
-        progress: 0,
-        current_step: "Initializing...",
-        steps_completed: [],
-        steps_total: 0,
-        errors: [],
+        job_id: resp.data.job_id, status: "running", progress: 0,
+        current_step: "Initializing agents...", steps_completed: [],
+        steps_total: 0, errors: [], agents: {},
       });
-    } catch (e: any) {
-      setError(e.message);
-    }
+    } catch (e: any) { setError(e.message); }
   };
 
   const pollStatus = useCallback(async () => {
@@ -170,24 +138,18 @@ function App() {
         if (pollingRef.current) clearInterval(pollingRef.current);
         fetchHistory();
       }
-    } catch {
-      // ignore polling errors
-    }
-  }, [migrationJob?.job_id]);
+    } catch {}
+  }, [migrationJob?.job_id, fetchHistory]);
 
   useEffect(() => {
     if (migrationJob?.status === "running" || migrationJob?.status === "pending") {
       pollingRef.current = setInterval(pollStatus, 1500);
-      return () => {
-        if (pollingRef.current) clearInterval(pollingRef.current);
-      };
+      return () => { if (pollingRef.current) clearInterval(pollingRef.current); };
     }
   }, [migrationJob?.status, pollStatus]);
 
   const downloadReport = () => {
-    if (migrationJob?.job_id) {
-      window.open(`${API}/download-report/${migrationJob.job_id}`, "_blank");
-    }
+    if (migrationJob?.job_id) window.open(`${API}/download-report/${migrationJob.job_id}`, "_blank");
   };
 
   const statusIcon = (s: ConnectionStatus) => {
@@ -199,6 +161,29 @@ function App() {
     }
   };
 
+  const agentStatusIcon = (status: string) => {
+    switch (status) {
+      case "completed": return <span className="agent-icon completed">&#10003;</span>;
+      case "running": return <span className="agent-icon running">&#9654;</span>;
+      case "failed": return <span className="agent-icon failed">&#10007;</span>;
+      default: return <span className="agent-icon pending">&#9679;</span>;
+    }
+  };
+
+  // Parse agents into groups
+  const agents = migrationJob?.agents || {};
+  const agentList = Object.values(agents);
+  const schemaAgent = agentList.find(a => a.agent_type === "schema");
+  const tableAgents = agentList.filter(a => a.agent_type === "table");
+  const viewAgent = agentList.find(a => a.agent_type === "view");
+  const procAgent = agentList.find(a => a.agent_type === "proc");
+  const reportAgentInfo = agentList.find(a => a.agent_type === "report");
+
+  const runningTables = tableAgents.filter(a => a.status === "running");
+  const completedTables = tableAgents.filter(a => a.status === "completed");
+  const failedTables = tableAgents.filter(a => a.status === "failed");
+  const pendingTables = tableAgents.filter(a => a.status === "pending");
+
   const isRunning = migrationJob?.status === "running" || migrationJob?.status === "pending";
   const isCompleted = migrationJob?.status === "completed";
   const isFailed = migrationJob?.status === "failed";
@@ -208,7 +193,7 @@ function App() {
       <header className="header">
         <div className="header-content">
           <h1>Database Migration Tool</h1>
-          <p className="subtitle">MSSQL to Databricks &mdash; Powered by Claude Code</p>
+          <p className="subtitle">MSSQL to Databricks &mdash; Multi-Agent Architecture</p>
         </div>
       </header>
 
@@ -242,11 +227,7 @@ function App() {
                 </div>
               )}
             </div>
-
-            <div className="arrow-container">
-              <div className="arrow">&#10132;</div>
-            </div>
-
+            <div className="arrow-container"><div className="arrow">&#10132;</div></div>
             <div className="db-select">
               <label>Target Database</label>
               <select value={targetDb} onChange={(e) => setTargetDb(e.target.value as DbType)} disabled={isRunning}>
@@ -267,11 +248,7 @@ function App() {
                 </div>
               )}
               <div className="reset-row">
-                <button
-                  onClick={resetTarget}
-                  disabled={!envFile || isRunning || resetStatus === "resetting"}
-                  className="btn-reset"
-                >
+                <button onClick={resetTarget} disabled={!envFile || isRunning || resetStatus === "resetting"} className="btn-reset">
                   {resetStatus === "resetting" ? "Resetting..." : resetStatus === "done" ? "Target Reset" : "Reset Target DB"}
                 </button>
                 {resetStatus === "done" && <span className="conn-text green-text">Cleared</span>}
@@ -289,47 +266,30 @@ function App() {
           <div className="upload-row">
             <div className="upload-box">
               <div className="upload-icon">&#128274;</div>
-              <label>
-                Environment File (.env) <span className="required">*</span>
-              </label>
+              <label>Environment File (.env) <span className="required">*</span></label>
               <p className="upload-desc">MSSQL, Databricks & GCP connection credentials</p>
               <label className="file-input-label">
-                <input
-                  type="file"
-                  accept="*"
-                  onChange={(e) => {
-                    setEnvFile(e.target.files?.[0] || null);
-                    setSourceStatus("idle");
-                    setTargetStatus("idle");
-                    setSourceInfo(null);
-                    setTargetInfo(null);
-                  }}
-                  disabled={isRunning}
-                />
+                <input type="file" accept="*" onChange={(e) => {
+                  setEnvFile(e.target.files?.[0] || null);
+                  setSourceStatus("idle"); setTargetStatus("idle");
+                  setSourceInfo(null); setTargetInfo(null);
+                }} disabled={isRunning} />
                 {envFile ? envFile.name : "Choose file..."}
               </label>
             </div>
-
             <div className="upload-box">
               <div className="upload-icon">&#9881;</div>
               <label>Human Decisions File (.env)</label>
-              <p className="upload-desc">
-                Pre-answers for 14 issues: HIERARCHYID, stored procs, collation, triggers, etc.
-              </p>
+              <p className="upload-desc">Pre-answers for 14 issues: HIERARCHYID, stored procs, collation, triggers, etc.</p>
               <label className="file-input-label">
-                <input
-                  type="file"
-                  accept="*"
-                  onChange={(e) => setHumanDecisionsFile(e.target.files?.[0] || null)}
-                  disabled={isRunning}
-                />
+                <input type="file" accept="*" onChange={(e) => setHumanDecisionsFile(e.target.files?.[0] || null)} disabled={isRunning} />
                 {humanDecisionsFile ? humanDecisionsFile.name : "Choose file..."}
               </label>
             </div>
           </div>
         </section>
 
-        {/* Step 3: Start Migration */}
+        {/* Step 3: Run Migration */}
         <section className="card">
           <div className="card-header">
             <span className="step-num">3</span>
@@ -339,20 +299,15 @@ function App() {
           {!migrationJob && (
             <div className="start-section">
               <p className="start-desc">
-                This will migrate all schemas, tables, views, stored procedures, and triggers
-                from MSSQL to Databricks, auto-fixing 44 known compatibility issues.
+                Multi-agent parallel migration: 8 concurrent table workers, automatic view translation,
+                procedure documentation. Auto-fixes 44 known compatibility issues.
               </p>
-              <button
-                className="btn-primary"
-                onClick={startMigration}
-                disabled={!envFile || isRunning}
-              >
+              <button className="btn-primary" onClick={startMigration} disabled={!envFile || isRunning}>
                 &#9654; Start Migration
               </button>
             </div>
           )}
 
-          {/* Progress Bar */}
           {migrationJob && (
             <div className="migration-progress">
               <div className="progress-header">
@@ -366,25 +321,125 @@ function App() {
               </div>
 
               <div className="progress-bar-container">
-                <div
-                  className={`progress-bar ${migrationJob.status}`}
-                  style={{ width: `${migrationJob.progress}%` }}
-                />
+                <div className={`progress-bar ${migrationJob.status}`} style={{ width: `${migrationJob.progress}%` }} />
               </div>
 
               <p className="current-step">{migrationJob.current_step}</p>
 
-              {/* Steps log */}
-              {migrationJob.steps_completed.length > 0 && (
-                <div className="steps-log">
-                  <h4>Completed Steps ({migrationJob.steps_completed.length})</h4>
-                  <div className="steps-list">
-                    {migrationJob.steps_completed.map((step, i) => (
-                      <div key={i} className="step-item">
-                        <span className="check">&#10003;</span> {step}
+              {/* ── Agent Status Panel ── */}
+              {agentList.length > 0 && (
+                <div className="agents-panel">
+                  <h4 className="agents-title">Agent Status</h4>
+
+                  {/* Schema Agent */}
+                  {schemaAgent && (
+                    <div className={`agent-row ${schemaAgent.status}`}>
+                      {agentStatusIcon(schemaAgent.status)}
+                      <span className="agent-name">Schema Setup</span>
+                      <div className="agent-bar-wrap">
+                        <div className="agent-bar" style={{ width: `${schemaAgent.progress}%` }} />
                       </div>
-                    ))}
-                  </div>
+                      <span className="agent-msg">{schemaAgent.message}</span>
+                    </div>
+                  )}
+
+                  {/* Table Agents Group */}
+                  {tableAgents.length > 0 && (
+                    <div className="agent-group">
+                      <div className="agent-group-header">
+                        <span className="agent-group-icon">
+                          {completedTables.length === tableAgents.length
+                            ? <span className="agent-icon completed">&#10003;</span>
+                            : runningTables.length > 0
+                            ? <span className="agent-icon running">&#9654;</span>
+                            : <span className="agent-icon pending">&#9679;</span>}
+                        </span>
+                        <span className="agent-group-title">
+                          Tables ({completedTables.length}/{tableAgents.length})
+                        </span>
+                        <span className="agent-group-detail">
+                          {runningTables.length > 0 && <span className="running-count">{runningTables.length} running</span>}
+                          {failedTables.length > 0 && <span className="failed-count">{failedTables.length} failed</span>}
+                          {pendingTables.length > 0 && <span className="pending-count">{pendingTables.length} queued</span>}
+                        </span>
+                      </div>
+
+                      {/* Running table agents - always visible */}
+                      {runningTables.map(a => (
+                        <div key={a.agent_id} className="agent-row running sub-agent">
+                          {agentStatusIcon(a.status)}
+                          <span className="agent-name">{a.display_name}</span>
+                          <div className="agent-bar-wrap">
+                            <div className="agent-bar" style={{ width: `${a.progress}%` }} />
+                          </div>
+                          <span className="agent-msg">{a.message}</span>
+                        </div>
+                      ))}
+
+                      {/* Failed table agents - always visible */}
+                      {failedTables.map(a => (
+                        <div key={a.agent_id} className="agent-row failed sub-agent">
+                          {agentStatusIcon(a.status)}
+                          <span className="agent-name">{a.display_name}</span>
+                          <span className="agent-msg agent-error">{a.message}</span>
+                        </div>
+                      ))}
+
+                      {/* Completed tables - collapsible */}
+                      {completedTables.length > 0 && (
+                        <div
+                          className="agent-collapse-toggle"
+                          onClick={() => setShowCompletedTables(!showCompletedTables)}
+                        >
+                          {showCompletedTables ? "Hide" : "Show"} {completedTables.length} completed tables
+                          <span className="collapse-arrow">{showCompletedTables ? "▲" : "▼"}</span>
+                        </div>
+                      )}
+                      {showCompletedTables && completedTables.map(a => (
+                        <div key={a.agent_id} className="agent-row completed sub-agent">
+                          {agentStatusIcon(a.status)}
+                          <span className="agent-name">{a.display_name}</span>
+                          <span className="agent-msg">{a.message}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* View Agent */}
+                  {viewAgent && (
+                    <div className={`agent-row ${viewAgent.status}`}>
+                      {agentStatusIcon(viewAgent.status)}
+                      <span className="agent-name">Views Migration</span>
+                      <div className="agent-bar-wrap">
+                        <div className="agent-bar" style={{ width: `${viewAgent.progress}%` }} />
+                      </div>
+                      <span className="agent-msg">{viewAgent.message}</span>
+                    </div>
+                  )}
+
+                  {/* Proc Agent */}
+                  {procAgent && (
+                    <div className={`agent-row ${procAgent.status}`}>
+                      {agentStatusIcon(procAgent.status)}
+                      <span className="agent-name">Stored Procedures</span>
+                      <div className="agent-bar-wrap">
+                        <div className="agent-bar" style={{ width: `${procAgent.progress}%` }} />
+                      </div>
+                      <span className="agent-msg">{procAgent.message}</span>
+                    </div>
+                  )}
+
+                  {/* Report Agent */}
+                  {reportAgentInfo && (
+                    <div className={`agent-row ${reportAgentInfo.status}`}>
+                      {agentStatusIcon(reportAgentInfo.status)}
+                      <span className="agent-name">PDF Report</span>
+                      <div className="agent-bar-wrap">
+                        <div className="agent-bar" style={{ width: `${reportAgentInfo.progress}%` }} />
+                      </div>
+                      <span className="agent-msg">{reportAgentInfo.message}</span>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -398,67 +453,32 @@ function App() {
                 </div>
               )}
 
-              {/* Stats (on completion) */}
+              {/* Stats */}
               {isCompleted && migrationJob.stats && (
                 <div className="stats-section">
                   <h4>Migration Results</h4>
                   <div className="stats-grid">
-                    <div className="stat-card blue">
-                      <div className="stat-value">{migrationJob.stats.schemas_created}</div>
-                      <div className="stat-label">Schemas</div>
-                    </div>
-                    <div className="stat-card blue">
-                      <div className="stat-value">{migrationJob.stats.tables_created}</div>
-                      <div className="stat-label">Tables</div>
-                    </div>
-                    <div className="stat-card blue">
-                      <div className="stat-value">{migrationJob.stats.rows_transferred?.toLocaleString()}</div>
-                      <div className="stat-label">Rows</div>
-                    </div>
-                    <div className="stat-card purple">
-                      <div className="stat-value">{migrationJob.stats.views_created}</div>
-                      <div className="stat-label">Views</div>
-                    </div>
-                    <div className="stat-card purple">
-                      <div className="stat-value">{migrationJob.stats.procedures_migrated}</div>
-                      <div className="stat-label">Procedures</div>
-                    </div>
-                    <div className="stat-card purple">
-                      <div className="stat-value">{migrationJob.stats.triggers_migrated}</div>
-                      <div className="stat-label">Triggers</div>
-                    </div>
-                    <div className="stat-card green">
-                      <div className="stat-value">{migrationJob.stats.issues_auto_fixed}</div>
-                      <div className="stat-label">Auto-Fixed</div>
-                    </div>
-                    <div className="stat-card green">
-                      <div className="stat-value">{migrationJob.stats.issues_human_resolved}</div>
-                      <div className="stat-label">Human Resolved</div>
-                    </div>
-                    <div className="stat-card orange">
-                      <div className="stat-value">{elapsed}</div>
-                      <div className="stat-label">Time Taken</div>
-                    </div>
-                    <div className="stat-card orange">
-                      <div className="stat-value">${migrationJob.stats.estimated_cost_usd}</div>
-                      <div className="stat-label">Est. Cost</div>
-                    </div>
-                    <div className="stat-card orange">
-                      <div className="stat-value">{migrationJob.stats.tokens_used?.toLocaleString()}</div>
-                      <div className="stat-label">Tokens</div>
-                    </div>
+                    <div className="stat-card blue"><div className="stat-value">{migrationJob.stats.schemas_created}</div><div className="stat-label">Schemas</div></div>
+                    <div className="stat-card blue"><div className="stat-value">{migrationJob.stats.tables_created}</div><div className="stat-label">Tables</div></div>
+                    <div className="stat-card blue"><div className="stat-value">{migrationJob.stats.rows_transferred?.toLocaleString()}</div><div className="stat-label">Rows</div></div>
+                    <div className="stat-card purple"><div className="stat-value">{migrationJob.stats.views_created}</div><div className="stat-label">Views</div></div>
+                    <div className="stat-card purple"><div className="stat-value">{migrationJob.stats.procedures_migrated}</div><div className="stat-label">Procedures</div></div>
+                    <div className="stat-card purple"><div className="stat-value">{migrationJob.stats.triggers_migrated}</div><div className="stat-label">Triggers</div></div>
+                    <div className="stat-card green"><div className="stat-value">{migrationJob.stats.issues_auto_fixed}</div><div className="stat-label">Auto-Fixed</div></div>
+                    <div className="stat-card green"><div className="stat-value">{migrationJob.stats.issues_human_resolved}</div><div className="stat-label">Human Resolved</div></div>
+                    <div className="stat-card orange"><div className="stat-value">{elapsed}</div><div className="stat-label">Time Taken</div></div>
+                    <div className="stat-card orange"><div className="stat-value">${migrationJob.stats.estimated_cost_usd}</div><div className="stat-label">Est. Cost</div></div>
+                    <div className="stat-card orange"><div className="stat-value">{migrationJob.stats.tokens_used?.toLocaleString()}</div><div className="stat-label">Tokens</div></div>
                   </div>
                 </div>
               )}
 
-              {/* Download Report */}
               {isCompleted && (
                 <button className="btn-primary btn-download" onClick={downloadReport}>
                   &#128196; Download PDF Report
                 </button>
               )}
 
-              {/* Retry */}
               {isFailed && (
                 <button className="btn-primary btn-retry" onClick={() => setMigrationJob(null)}>
                   &#8634; Reset &amp; Try Again
@@ -479,49 +499,26 @@ function App() {
               <table className="history-table">
                 <thead>
                   <tr>
-                    <th>Date &amp; Time</th>
-                    <th>Status</th>
-                    <th>Duration</th>
-                    <th>Source</th>
-                    <th>Target</th>
-                    <th>Tables</th>
-                    <th>Rows</th>
-                    <th>Views</th>
-                    <th>Procs</th>
-                    <th>Issues Fixed</th>
-                    <th>Tokens</th>
-                    <th>Cost</th>
-                    <th>Errors</th>
+                    <th>Date &amp; Time</th><th>Status</th><th>Duration</th>
+                    <th>Source</th><th>Target</th><th>Tables</th><th>Rows</th>
+                    <th>Views</th><th>Procs</th><th>Issues Fixed</th>
+                    <th>Tokens</th><th>Cost</th><th>Errors</th>
                   </tr>
                 </thead>
                 <tbody>
                   {history.map((h, i) => (
                     <tr key={i} className={h.status === "failed" ? "row-failed" : ""}>
-                      <td className="td-nowrap">
-                        {h.start_time ? new Date(h.start_time).toLocaleString() : "—"}
-                      </td>
-                      <td>
-                        <span className={`history-badge ${h.status}`}>
-                          {h.status?.toUpperCase()}
-                        </span>
-                      </td>
-                      <td>{h.duration || "—"}</td>
-                      <td className="td-small">
-                        {h.source_db?.database || "—"}
-                        <br />
-                        <span className="td-muted">{h.source_db?.host}</span>
-                      </td>
-                      <td className="td-small">
-                        {h.target_db?.catalog || "—"}
-                        <br />
-                        <span className="td-muted">{h.target_db?.host?.replace("https://", "").slice(0, 20)}</span>
-                      </td>
-                      <td>{h.tables_loaded ?? "—"}</td>
-                      <td>{h.rows_transferred?.toLocaleString() ?? "—"}</td>
-                      <td>{h.views_created ?? "—"}</td>
-                      <td>{h.procedures_migrated ?? "—"}</td>
+                      <td className="td-nowrap">{h.start_time ? new Date(h.start_time).toLocaleString() : "\u2014"}</td>
+                      <td><span className={`history-badge ${h.status}`}>{h.status?.toUpperCase()}</span></td>
+                      <td>{h.duration || "\u2014"}</td>
+                      <td className="td-small">{h.source_db?.database || "\u2014"}<br /><span className="td-muted">{h.source_db?.host}</span></td>
+                      <td className="td-small">{h.target_db?.catalog || "\u2014"}<br /><span className="td-muted">{h.target_db?.host?.replace("https://", "").slice(0, 20)}</span></td>
+                      <td>{h.tables_loaded ?? "\u2014"}</td>
+                      <td>{h.rows_transferred?.toLocaleString() ?? "\u2014"}</td>
+                      <td>{h.views_created ?? "\u2014"}</td>
+                      <td>{h.procedures_migrated ?? "\u2014"}</td>
                       <td>{(h.issues_auto_fixed || 0) + (h.issues_human_resolved || 0)}</td>
-                      <td>{h.tokens_used?.toLocaleString() ?? "—"}</td>
+                      <td>{h.tokens_used?.toLocaleString() ?? "\u2014"}</td>
                       <td>${h.estimated_cost_usd ?? "0"}</td>
                       <td className={h.errors_count > 0 ? "td-error" : ""}>{h.errors_count ?? 0}</td>
                     </tr>
@@ -532,7 +529,6 @@ function App() {
           </section>
         )}
 
-        {/* Error banner */}
         {error && (
           <div className="error-banner" onClick={() => setError("")}>
             {error} <span className="dismiss">(click to dismiss)</span>
@@ -541,7 +537,7 @@ function App() {
       </main>
 
       <footer className="footer">
-        <p>HealthDB POC | MSSQL to Databricks Migration | {new Date().getFullYear()}</p>
+        <p>HealthDB POC | MSSQL to Databricks Migration | Multi-Agent | {new Date().getFullYear()}</p>
       </footer>
     </div>
   );

@@ -589,6 +589,147 @@ body {
   border-top: 1px solid #1a2038;
 }
 
+/* ── Agent Status Panel ── */
+.agents-panel {
+  margin-top: 16px;
+  border: 1px solid #2d3348;
+  border-radius: 8px;
+  padding: 12px;
+  background: #0f1117;
+}
+
+.agents-title {
+  margin: 0 0 12px 0;
+  color: #8b92a5;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.agent-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  margin-bottom: 4px;
+  transition: background 0.2s;
+}
+
+.agent-row.running { background: #1e293b; }
+.agent-row.completed { background: #0a1a0a; }
+.agent-row.failed { background: #1a0a0a; }
+.agent-row.pending { background: transparent; opacity: 0.5; }
+
+.agent-row.sub-agent { padding-left: 32px; }
+
+.agent-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.agent-icon.completed { background: #14532d; color: #22c55e; }
+.agent-icon.running { background: #1e3a5f; color: #60a5fa; animation: pulse 1.5s infinite; }
+.agent-icon.failed { background: #450a0a; color: #ef4444; }
+.agent-icon.pending { background: #1f2937; color: #4b5563; font-size: 8px; }
+
+.agent-name {
+  color: #e1e4e8;
+  font-size: 13px;
+  font-weight: 500;
+  min-width: 130px;
+  flex-shrink: 0;
+}
+
+.agent-bar-wrap {
+  flex: 1;
+  height: 6px;
+  background: #1f2937;
+  border-radius: 3px;
+  overflow: hidden;
+  min-width: 80px;
+}
+
+.agent-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #3b82f6, #60a5fa);
+  border-radius: 3px;
+  transition: width 0.5s ease;
+}
+
+.agent-row.completed .agent-bar { background: linear-gradient(90deg, #22c55e, #4ade80); }
+.agent-row.failed .agent-bar { background: #ef4444; }
+
+.agent-msg {
+  color: #6b7280;
+  font-size: 12px;
+  min-width: 120px;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 250px;
+}
+
+.agent-msg.agent-error { color: #f87171; }
+
+/* Agent Group (Tables) */
+.agent-group {
+  margin: 4px 0;
+  border: 1px solid #1f2937;
+  border-radius: 6px;
+  padding: 4px;
+}
+
+.agent-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #e1e4e8;
+}
+
+.agent-group-title { flex-shrink: 0; }
+
+.agent-group-detail {
+  display: flex;
+  gap: 12px;
+  margin-left: auto;
+  font-size: 12px;
+}
+
+.running-count { color: #60a5fa; }
+.failed-count { color: #ef4444; }
+.pending-count { color: #6b7280; }
+
+.agent-collapse-toggle {
+  padding: 6px 32px;
+  font-size: 12px;
+  color: #6b7280;
+  cursor: pointer;
+  user-select: none;
+}
+
+.agent-collapse-toggle:hover { color: #93a3b8; }
+
+.collapse-arrow {
+  margin-left: 6px;
+  font-size: 10px;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
 /* ── History Table ── */
 .history-table-wrapper {
   overflow-x: auto;

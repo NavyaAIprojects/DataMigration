@@ -39,7 +39,7 @@ HISTORY_FILE = BASE_DIR / "migration_history.json"
 UPLOAD_DIR.mkdir(exist_ok=True)
 REPORT_DIR.mkdir(exist_ok=True)
 
-MAX_PARALLEL_WORKERS = 16
+MAX_PARALLEL_WORKERS = 10
 
 
 def load_history() -> list:

@@ -39,7 +39,7 @@ HISTORY_FILE = BASE_DIR / "migration_history.json"
 UPLOAD_DIR.mkdir(exist_ok=True)
 REPORT_DIR.mkdir(exist_ok=True)
 
-MAX_PARALLEL_WORKERS = 8
+MAX_PARALLEL_WORKERS = 16
 
 
 def load_history() -> list:
@@ -78,7 +78,7 @@ def run_sql(host: str, token: str, warehouse_id: str, statement: str):
     )
     result = resp.json()
     while result.get("status", {}).get("state") in ("PENDING", "RUNNING"):
-        time.sleep(2)
+        time.sleep(0.5)
         stmt_id = result.get("statement_id", "")
         poll_resp = requests.get(
             f"{host}/api/2.0/sql/statements/{stmt_id}",
@@ -212,12 +212,30 @@ def schema_agent(agent: AgentStatus, env: dict, exclude_schemas: list) -> dict:
     )
     tables = [(r["TABLE_SCHEMA"], r["TABLE_NAME"]) for r in cursor.fetchall() if r["TABLE_SCHEMA"] not in exclude_schemas]
 
+    # Fast row counts via system stats (1 query instead of N)
     table_rows = {}
+    try:
+        cursor.execute(
+            "SELECT s.name AS schema_name, t.name AS table_name, "
+            "SUM(p.rows) AS row_count "
+            "FROM sys.tables t "
+            "JOIN sys.schemas s ON t.schema_id = s.schema_id "
+            "JOIN sys.partitions p ON t.object_id = p.object_id AND p.index_id IN (0,1) "
+            "GROUP BY s.name, t.name"
+        )
+        for r in cursor.fetchall():
+            table_rows[(r["schema_name"], r["table_name"])] = r["row_count"]
+    except Exception:
+        # Fallback: sequential counts
+        for schema, table in tables:
+            try:
+                cursor.execute(f"SELECT COUNT(*) AS cnt FROM [{schema}].[{table}]")
+                table_rows[(schema, table)] = cursor.fetchone()["cnt"]
+            except Exception:
+                table_rows[(schema, table)] = 0
+    # Fill in any missing tables with 0
     for schema, table in tables:
-        try:
-            cursor.execute(f"SELECT COUNT(*) AS cnt FROM [{schema}].[{table}]")
-            table_rows[(schema, table)] = cursor.fetchone()["cnt"]
-        except Exception:
+        if (schema, table) not in table_rows:
             table_rows[(schema, table)] = 0
     conn.close()
 
@@ -302,7 +320,7 @@ def table_agent(agent: AgentStatus, env: dict, schema: str, table: str, total_ro
             return {"rows": 0}
 
         # Batch insert
-        batch_size = min(int(env.get("BATCH_SIZE", "500")), 500)
+        batch_size = min(int(env.get("BATCH_SIZE", "1000")), 1000)
         transferred = 0
         errors = []
 
@@ -501,72 +519,68 @@ def proc_agent(agent: AgentStatus, env: dict, human_decisions: dict) -> dict:
     }
 
 
-def validation_agent(agent: AgentStatus, env: dict, tables: list, table_rows: dict) -> dict:
-    """Validate migration by comparing source vs target row counts."""
-    import pymssql
+def _validate_single_table(host, token, warehouse_id, catalog, schema, table, source_count):
+    """Validate a single table's row count (called in parallel)."""
+    try:
+        result = run_sql(host, token, warehouse_id,
+                         f"SELECT COUNT(*) FROM {catalog}.{schema}.{table}")
+        err = get_sql_error(result)
+        if err:
+            return {"table": f"{schema}.{table}", "source_rows": source_count,
+                    "target_rows": -1, "match": False, "error": err[:150]}
+        data_array = result.get("result", {}).get("data_array", [])
+        target_count = int(data_array[0][0]) if data_array else 0
+        match = source_count == target_count
+        detail = {"table": f"{schema}.{table}", "source_rows": source_count,
+                  "target_rows": target_count, "match": match}
+        if not match:
+            detail["mismatch_msg"] = (
+                f"{schema}.{table}: source={source_count:,} target={target_count:,} "
+                f"(diff={source_count - target_count:,})"
+            )
+        return detail
+    except Exception as e:
+        return {"table": f"{schema}.{table}", "source_rows": source_count,
+                "target_rows": -1, "match": False, "error": str(e)}
 
+
+def validation_agent(agent: AgentStatus, env: dict, tables: list, table_rows: dict) -> dict:
+    """Validate migration by comparing source vs target row counts (parallel)."""
     host = env.get("DATABRICKS_HOST", "").rstrip("/")
     token = env.get("DATABRICKS_TOKEN", "")
     warehouse_id = env.get("DATABRICKS_WAREHOUSE_ID", "")
     catalog = env.get("DATABRICKS_CATALOG", "healthcare_poc")
 
-    agent.start(f"Validating {len(tables)} tables...")
+    agent.start(f"Validating {len(tables)} tables in parallel...")
 
     validated = 0
     mismatches = []
     errors = []
     validation_details = []
+    lock = threading.Lock()
+    completed = [0]
 
-    for idx, (schema, table) in enumerate(tables):
-        try:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_PARALLEL_WORKERS) as executor:
+        future_map = {}
+        for schema, table in tables:
             source_count = table_rows.get((schema, table), 0)
+            f = executor.submit(_validate_single_table, host, token, warehouse_id,
+                                catalog, schema, table, source_count)
+            future_map[f] = (schema, table)
 
-            # Query target row count from Databricks
-            result = run_sql(host, token, warehouse_id,
-                             f"SELECT COUNT(*) FROM {catalog}.{schema}.{table}")
-            err = get_sql_error(result)
-            if err:
-                errors.append(f"{schema}.{table}: {err[:150]}")
-                validation_details.append({
-                    "table": f"{schema}.{table}",
-                    "source_rows": source_count,
-                    "target_rows": -1,
-                    "match": False,
-                    "error": err[:150],
-                })
-                continue
-
-            data_array = result.get("result", {}).get("data_array", [])
-            target_count = int(data_array[0][0]) if data_array else 0
-
-            match = source_count == target_count
-            if match:
-                validated += 1
-            else:
-                mismatches.append(
-                    f"{schema}.{table}: source={source_count:,} target={target_count:,} "
-                    f"(diff={source_count - target_count:,})"
-                )
-
-            validation_details.append({
-                "table": f"{schema}.{table}",
-                "source_rows": source_count,
-                "target_rows": target_count,
-                "match": match,
-            })
-
-        except Exception as e:
-            errors.append(f"{schema}.{table}: {str(e)}")
-            validation_details.append({
-                "table": f"{schema}.{table}",
-                "source_rows": table_rows.get((schema, table), 0),
-                "target_rows": -1,
-                "match": False,
-                "error": str(e),
-            })
-
-        pct = (idx + 1) / max(len(tables), 1) * 100
-        agent.update(pct, f"Validated {idx + 1}/{len(tables)} tables ({validated} matched)")
+        for future in concurrent.futures.as_completed(future_map):
+            detail = future.result()
+            with lock:
+                validation_details.append(detail)
+                if detail.get("error"):
+                    errors.append(f"{detail['table']}: {detail['error']}")
+                elif detail["match"]:
+                    validated += 1
+                else:
+                    mismatches.append(detail.get("mismatch_msg", detail["table"]))
+                completed[0] += 1
+                agent.update(completed[0] / max(len(tables), 1) * 100,
+                             f"Validated {completed[0]}/{len(tables)} ({validated} matched)")
 
     total = len(tables)
     pct_match = round(validated / max(total, 1) * 100, 1)
@@ -808,49 +822,44 @@ def run_migration(job_id: str, env: dict, human_decisions: dict):
                         stats["errors"].append(f"Table {schema}.{table}: {str(e)}")
                         completed_tables += 1
 
-        # ── Phase 3: View + Proc Agents (parallel) ───────────────────
+        # ── Phase 3: Views + Procs + Validation (ALL parallel) ─────
         va = AgentStatus("views", "Views Migration", "view")
         pa = AgentStatus("procs", "Stored Procedures", "proc")
+        vla = AgentStatus("validation", "Validation Check", "validation")
         job["agents"]["views"] = va.to_dict()
         job["agents"]["procs"] = pa.to_dict()
-        job["current_step"] = "Migrating views and procedures..."
+        job["agents"]["validation"] = vla.to_dict()
+        job["current_step"] = "Views + Procs + Validation (parallel)..."
         job["progress"] = 82
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             view_future = executor.submit(view_agent, va, env, schemas)
             proc_future = executor.submit(proc_agent, pa, env, human_decisions)
+            val_future = executor.submit(validation_agent, vla, env, tables, table_rows)
 
-            # Update agents as they complete
-            for future in concurrent.futures.as_completed([view_future, proc_future]):
+            for future in concurrent.futures.as_completed([view_future, proc_future, val_future]):
                 if future == view_future:
                     vr = future.result()
                     stats["views_created"] = vr.get("views_created", 0)
                     stats["errors"].extend(vr.get("errors", []))
                     job["agents"]["views"] = va.to_dict()
-                else:
+                elif future == proc_future:
                     pr = future.result()
                     stats["procedures_migrated"] = pr.get("procedures_migrated", 0)
                     stats["triggers_migrated"] = pr.get("triggers_migrated", 0)
                     job["agents"]["procs"] = pa.to_dict()
-
-        job["progress"] = 85
-
-        # ── Phase 4: Validation Agent ────────────────────────────────
-        vla = AgentStatus("validation", "Validation Check", "validation")
-        job["agents"]["validation"] = vla.to_dict()
-        job["current_step"] = "Validating migration..."
-
-        val_result = validation_agent(vla, env, tables, table_rows)
-        job["agents"]["validation"] = vla.to_dict()
-        stats["validation_pct"] = val_result.get("validation_pct", 0)
-        stats["tables_validated"] = val_result.get("tables_validated", 0)
-        stats["validation_mismatches"] = val_result.get("mismatches", [])
-        stats["validation_details"] = val_result.get("details", [])
-        stats["errors"].extend(val_result.get("errors", []))
+                else:
+                    val_result = future.result()
+                    stats["validation_pct"] = val_result.get("validation_pct", 0)
+                    stats["tables_validated"] = val_result.get("tables_validated", 0)
+                    stats["validation_mismatches"] = val_result.get("mismatches", [])
+                    stats["validation_details"] = val_result.get("details", [])
+                    stats["errors"].extend(val_result.get("errors", []))
+                    job["agents"]["validation"] = vla.to_dict()
 
         job["progress"] = 92
 
-        # ── Phase 5: Report Agent ────────────────────────────────────
+        # ── Phase 4: Report Agent ────────────────────────────────────
         # Compute tokens/cost
         stats["tokens_used"] = stats["rows_transferred"] * 10
         stats["estimated_cost_usd"] = round(stats["tokens_used"] * 0.000003, 4)

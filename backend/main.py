@@ -1,5 +1,5 @@
 """
-MSSQL to Databricks Migration API — Multi-Agent Architecture
+MSSQL to Databricks Migration API - Multi-Agent Architecture
 FastAPI backend with parallel processing via ThreadPoolExecutor
 """
 import os
@@ -586,9 +586,9 @@ def validation_agent(agent: AgentStatus, env: dict, tables: list, table_rows: di
     pct_match = round(validated / max(total, 1) * 100, 1)
 
     if validated == total:
-        agent.complete(f"100% validated — all {total} tables match")
+        agent.complete(f"100% validated - all {total} tables match")
     elif mismatches:
-        agent.complete(f"{pct_match}% validated — {validated}/{total} match, {len(mismatches)} mismatches")
+        agent.complete(f"{pct_match}% validated - {validated}/{total} match, {len(mismatches)} mismatches")
     else:
         agent.complete(f"{validated}/{total} tables validated")
 
@@ -616,7 +616,7 @@ def report_agent(agent: AgentStatus, job_id: str, stats: dict, env: dict, human_
     pdf.set_font("Helvetica", "B", 24)
     pdf.cell(0, 20, "Migration Report", new_x="LMARGIN", new_y="NEXT", align="C")
     pdf.set_font("Helvetica", "", 14)
-    pdf.cell(0, 10, "MSSQL to Databricks — Multi-Agent Migration", new_x="LMARGIN", new_y="NEXT", align="C")
+    pdf.cell(0, 10, "MSSQL to Databricks - Multi-Agent Migration", new_x="LMARGIN", new_y="NEXT", align="C")
     pdf.cell(0, 10, f"Job ID: {job_id}", new_x="LMARGIN", new_y="NEXT", align="C")
     pdf.cell(0, 10, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", new_x="LMARGIN", new_y="NEXT", align="C")
     pdf.ln(10)

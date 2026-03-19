@@ -501,6 +501,93 @@ def proc_agent(agent: AgentStatus, env: dict, human_decisions: dict) -> dict:
     }
 
 
+def validation_agent(agent: AgentStatus, env: dict, tables: list, table_rows: dict) -> dict:
+    """Validate migration by comparing source vs target row counts."""
+    import pymssql
+
+    host = env.get("DATABRICKS_HOST", "").rstrip("/")
+    token = env.get("DATABRICKS_TOKEN", "")
+    warehouse_id = env.get("DATABRICKS_WAREHOUSE_ID", "")
+    catalog = env.get("DATABRICKS_CATALOG", "healthcare_poc")
+
+    agent.start(f"Validating {len(tables)} tables...")
+
+    validated = 0
+    mismatches = []
+    errors = []
+    validation_details = []
+
+    for idx, (schema, table) in enumerate(tables):
+        try:
+            source_count = table_rows.get((schema, table), 0)
+
+            # Query target row count from Databricks
+            result = run_sql(host, token, warehouse_id,
+                             f"SELECT COUNT(*) FROM {catalog}.{schema}.{table}")
+            err = get_sql_error(result)
+            if err:
+                errors.append(f"{schema}.{table}: {err[:150]}")
+                validation_details.append({
+                    "table": f"{schema}.{table}",
+                    "source_rows": source_count,
+                    "target_rows": -1,
+                    "match": False,
+                    "error": err[:150],
+                })
+                continue
+
+            data_array = result.get("result", {}).get("data_array", [])
+            target_count = int(data_array[0][0]) if data_array else 0
+
+            match = source_count == target_count
+            if match:
+                validated += 1
+            else:
+                mismatches.append(
+                    f"{schema}.{table}: source={source_count:,} target={target_count:,} "
+                    f"(diff={source_count - target_count:,})"
+                )
+
+            validation_details.append({
+                "table": f"{schema}.{table}",
+                "source_rows": source_count,
+                "target_rows": target_count,
+                "match": match,
+            })
+
+        except Exception as e:
+            errors.append(f"{schema}.{table}: {str(e)}")
+            validation_details.append({
+                "table": f"{schema}.{table}",
+                "source_rows": table_rows.get((schema, table), 0),
+                "target_rows": -1,
+                "match": False,
+                "error": str(e),
+            })
+
+        pct = (idx + 1) / max(len(tables), 1) * 100
+        agent.update(pct, f"Validated {idx + 1}/{len(tables)} tables ({validated} matched)")
+
+    total = len(tables)
+    pct_match = round(validated / max(total, 1) * 100, 1)
+
+    if validated == total:
+        agent.complete(f"100% validated — all {total} tables match")
+    elif mismatches:
+        agent.complete(f"{pct_match}% validated — {validated}/{total} match, {len(mismatches)} mismatches")
+    else:
+        agent.complete(f"{validated}/{total} tables validated")
+
+    return {
+        "tables_validated": validated,
+        "tables_total": total,
+        "validation_pct": pct_match,
+        "mismatches": mismatches,
+        "errors": errors,
+        "details": validation_details,
+    }
+
+
 def report_agent(agent: AgentStatus, job_id: str, stats: dict, env: dict, human_decisions: dict) -> dict:
     """Generate PDF migration report."""
     from fpdf import FPDF
@@ -579,6 +666,29 @@ def report_agent(agent: AgentStatus, job_id: str, stats: dict, env: dict, human_
     ]:
         pdf.cell(70, 8, f"{label}:", new_x="RIGHT")
         pdf.cell(0, 8, str(value), new_x="LMARGIN", new_y="NEXT")
+
+    # Validation results
+    agent.update(70, "Writing validation results...")
+    validation_pct = stats.get("validation_pct", 0)
+    tables_validated = stats.get("tables_validated", 0)
+    validation_mismatches = stats.get("validation_mismatches", [])
+
+    pdf.ln(5)
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, "Validation Results", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", "", 11)
+    for label, value in [
+        ("Validation Match", f"{validation_pct}%"),
+        ("Tables Validated", f"{tables_validated}/{stats.get('tables_created', 0)}"),
+        ("Mismatches", str(len(validation_mismatches))),
+    ]:
+        pdf.cell(70, 8, f"{label}:", new_x="RIGHT")
+        pdf.cell(0, 8, str(value), new_x="LMARGIN", new_y="NEXT")
+
+    if validation_mismatches:
+        pdf.set_font("Helvetica", "", 9)
+        for mm in validation_mismatches:
+            pdf.multi_cell(0, 6, f"  - {mm}", new_x="LMARGIN", new_y="NEXT")
 
     agent.update(80, "Writing errors...")
 
@@ -723,9 +833,24 @@ def run_migration(job_id: str, env: dict, human_decisions: dict):
                     stats["triggers_migrated"] = pr.get("triggers_migrated", 0)
                     job["agents"]["procs"] = pa.to_dict()
 
+        job["progress"] = 85
+
+        # ── Phase 4: Validation Agent ────────────────────────────────
+        vla = AgentStatus("validation", "Validation Check", "validation")
+        job["agents"]["validation"] = vla.to_dict()
+        job["current_step"] = "Validating migration..."
+
+        val_result = validation_agent(vla, env, tables, table_rows)
+        job["agents"]["validation"] = vla.to_dict()
+        stats["validation_pct"] = val_result.get("validation_pct", 0)
+        stats["tables_validated"] = val_result.get("tables_validated", 0)
+        stats["validation_mismatches"] = val_result.get("mismatches", [])
+        stats["validation_details"] = val_result.get("details", [])
+        stats["errors"].extend(val_result.get("errors", []))
+
         job["progress"] = 92
 
-        # ── Phase 4: Report Agent ────────────────────────────────────
+        # ── Phase 5: Report Agent ────────────────────────────────────
         # Compute tokens/cost
         stats["tokens_used"] = stats["rows_transferred"] * 10
         stats["estimated_cost_usd"] = round(stats["tokens_used"] * 0.000003, 4)
@@ -793,6 +918,8 @@ def _save_job_history(job: dict, env: dict):
         "triggers_migrated": stats.get("triggers_migrated", 0),
         "issues_auto_fixed": stats.get("issues_auto_fixed", 0),
         "issues_human_resolved": stats.get("issues_human_resolved", 0),
+        "validation_pct": stats.get("validation_pct", 0),
+        "tables_validated": stats.get("tables_validated", 0),
         "tokens_used": stats.get("tokens_used", 0),
         "estimated_cost_usd": stats.get("estimated_cost_usd", 0.0),
         "errors_count": len(stats.get("errors", [])),

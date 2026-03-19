@@ -177,6 +177,7 @@ function App() {
   const tableAgents = agentList.filter(a => a.agent_type === "table");
   const viewAgent = agentList.find(a => a.agent_type === "view");
   const procAgent = agentList.find(a => a.agent_type === "proc");
+  const validationAgentInfo = agentList.find(a => a.agent_type === "validation");
   const reportAgentInfo = agentList.find(a => a.agent_type === "report");
 
   const runningTables = tableAgents.filter(a => a.status === "running");
@@ -429,6 +430,18 @@ function App() {
                     </div>
                   )}
 
+                  {/* Validation Agent */}
+                  {validationAgentInfo && (
+                    <div className={`agent-row ${validationAgentInfo.status}`}>
+                      {agentStatusIcon(validationAgentInfo.status)}
+                      <span className="agent-name">Validation Check</span>
+                      <div className="agent-bar-wrap">
+                        <div className="agent-bar" style={{ width: `${validationAgentInfo.progress}%` }} />
+                      </div>
+                      <span className="agent-msg">{validationAgentInfo.message}</span>
+                    </div>
+                  )}
+
                   {/* Report Agent */}
                   {reportAgentInfo && (
                     <div className={`agent-row ${reportAgentInfo.status}`}>
@@ -464,6 +477,7 @@ function App() {
                     <div className="stat-card purple"><div className="stat-value">{migrationJob.stats.views_created}</div><div className="stat-label">Views</div></div>
                     <div className="stat-card purple"><div className="stat-value">{migrationJob.stats.procedures_migrated}</div><div className="stat-label">Procedures</div></div>
                     <div className="stat-card purple"><div className="stat-value">{migrationJob.stats.triggers_migrated}</div><div className="stat-label">Triggers</div></div>
+                    <div className="stat-card green"><div className="stat-value">{migrationJob.stats.validation_pct}%</div><div className="stat-label">Validated</div></div>
                     <div className="stat-card green"><div className="stat-value">{migrationJob.stats.issues_auto_fixed}</div><div className="stat-label">Auto-Fixed</div></div>
                     <div className="stat-card green"><div className="stat-value">{migrationJob.stats.issues_human_resolved}</div><div className="stat-label">Human Resolved</div></div>
                     <div className="stat-card orange"><div className="stat-value">{elapsed}</div><div className="stat-label">Time Taken</div></div>

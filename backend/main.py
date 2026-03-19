@@ -31,9 +31,10 @@ app.add_middleware(
 # In-memory state for migration jobs
 migration_jobs: dict = {}
 
-UPLOAD_DIR = Path("/Users/ng/Workspace/DataMigration/backend/uploads")
-REPORT_DIR = Path("/Users/ng/Workspace/DataMigration/backend/reports")
-HISTORY_FILE = Path("/Users/ng/Workspace/DataMigration/backend/migration_history.json")
+BASE_DIR = Path(__file__).resolve().parent
+UPLOAD_DIR = BASE_DIR / "uploads"
+REPORT_DIR = BASE_DIR / "reports"
+HISTORY_FILE = BASE_DIR / "migration_history.json"
 UPLOAD_DIR.mkdir(exist_ok=True)
 REPORT_DIR.mkdir(exist_ok=True)
 

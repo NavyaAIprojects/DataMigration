@@ -31,6 +31,8 @@ function App() {
   const [targetInfo, setTargetInfo] = useState<any>(null);
   const [migrationJob, setMigrationJob] = useState<MigrationJob | null>(null);
   const [error, setError] = useState<string>("");
+  const [resetStatus, setResetStatus] = useState<"idle" | "resetting" | "done">("idle");
+  const [history, setHistory] = useState<any[]>([]);
   const [elapsed, setElapsed] = useState<string>("00:00:00");
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -66,6 +68,43 @@ function App() {
       }
     }
   }, [migrationJob?.status, migrationJob?.start_time, migrationJob?.end_time]);
+
+  const fetchHistory = useCallback(async () => {
+    try {
+      const resp = await axios.get(`${API}/migration-history`);
+      setHistory(resp.data);
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => { fetchHistory(); }, [fetchHistory]);
+
+  const resetTarget = async () => {
+    if (!envFile) {
+      setError("Please upload the .env file first");
+      return;
+    }
+    if (!window.confirm("This will DELETE ALL data from the target Databricks catalog. Are you sure?")) {
+      return;
+    }
+    setResetStatus("resetting");
+    setError("");
+    try {
+      const formData = new FormData();
+      formData.append("env_file", envFile);
+      const resp = await axios.post(`${API}/reset-target`, formData);
+      setResetStatus("done");
+      setTargetInfo(null);
+      setTargetStatus("idle");
+      setMigrationJob(null);
+      startTimeRef.current = null;
+      setElapsed("00:00:00");
+      setTimeout(() => setResetStatus("idle"), 3000);
+      alert(resp.data.message);
+    } catch (e: any) {
+      setResetStatus("idle");
+      setError(e.response?.data?.detail || e.message);
+    }
+  };
 
   const testConnection = async (dbType: DbType) => {
     if (!envFile) {
@@ -129,6 +168,7 @@ function App() {
       setMigrationJob(resp.data);
       if (resp.data.status === "completed" || resp.data.status === "failed") {
         if (pollingRef.current) clearInterval(pollingRef.current);
+        fetchHistory();
       }
     } catch {
       // ignore polling errors
@@ -226,6 +266,16 @@ function App() {
                   <div className="info-item">Ready for migration</div>
                 </div>
               )}
+              <div className="reset-row">
+                <button
+                  onClick={resetTarget}
+                  disabled={!envFile || isRunning || resetStatus === "resetting"}
+                  className="btn-reset"
+                >
+                  {resetStatus === "resetting" ? "Resetting..." : resetStatus === "done" ? "Target Reset" : "Reset Target DB"}
+                </button>
+                {resetStatus === "done" && <span className="conn-text green-text">Cleared</span>}
+              </div>
             </div>
           </div>
         </section>
@@ -246,7 +296,7 @@ function App() {
               <label className="file-input-label">
                 <input
                   type="file"
-                  accept=".env,.env.*,.txt"
+                  accept="*"
                   onChange={(e) => {
                     setEnvFile(e.target.files?.[0] || null);
                     setSourceStatus("idle");
@@ -269,7 +319,7 @@ function App() {
               <label className="file-input-label">
                 <input
                   type="file"
-                  accept=".env,.env.*,.txt"
+                  accept="*"
                   onChange={(e) => setHumanDecisionsFile(e.target.files?.[0] || null)}
                   disabled={isRunning}
                 />
@@ -417,6 +467,70 @@ function App() {
             </div>
           )}
         </section>
+
+        {/* Migration History */}
+        {history.length > 0 && (
+          <section className="card">
+            <div className="card-header">
+              <span className="step-num">4</span>
+              <h2>Migration History</h2>
+            </div>
+            <div className="history-table-wrapper">
+              <table className="history-table">
+                <thead>
+                  <tr>
+                    <th>Date &amp; Time</th>
+                    <th>Status</th>
+                    <th>Duration</th>
+                    <th>Source</th>
+                    <th>Target</th>
+                    <th>Tables</th>
+                    <th>Rows</th>
+                    <th>Views</th>
+                    <th>Procs</th>
+                    <th>Issues Fixed</th>
+                    <th>Tokens</th>
+                    <th>Cost</th>
+                    <th>Errors</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {history.map((h, i) => (
+                    <tr key={i} className={h.status === "failed" ? "row-failed" : ""}>
+                      <td className="td-nowrap">
+                        {h.start_time ? new Date(h.start_time).toLocaleString() : "—"}
+                      </td>
+                      <td>
+                        <span className={`history-badge ${h.status}`}>
+                          {h.status?.toUpperCase()}
+                        </span>
+                      </td>
+                      <td>{h.duration || "—"}</td>
+                      <td className="td-small">
+                        {h.source_db?.database || "—"}
+                        <br />
+                        <span className="td-muted">{h.source_db?.host}</span>
+                      </td>
+                      <td className="td-small">
+                        {h.target_db?.catalog || "—"}
+                        <br />
+                        <span className="td-muted">{h.target_db?.host?.replace("https://", "").slice(0, 20)}</span>
+                      </td>
+                      <td>{h.tables_loaded ?? "—"}</td>
+                      <td>{h.rows_transferred?.toLocaleString() ?? "—"}</td>
+                      <td>{h.views_created ?? "—"}</td>
+                      <td>{h.procedures_migrated ?? "—"}</td>
+                      <td>{(h.issues_auto_fixed || 0) + (h.issues_human_resolved || 0)}</td>
+                      <td>{h.tokens_used?.toLocaleString() ?? "—"}</td>
+                      <td>${h.estimated_cost_usd ?? "0"}</td>
+                      <td className={h.errors_count > 0 ? "td-error" : ""}>{h.errors_count ?? 0}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
 
         {/* Error banner */}
         {error && (

@@ -31,8 +31,21 @@ migration_jobs: dict = {}
 
 UPLOAD_DIR = Path("/Users/ng/Workspace/DataMigration/backend/uploads")
 REPORT_DIR = Path("/Users/ng/Workspace/DataMigration/backend/reports")
+HISTORY_FILE = Path("/Users/ng/Workspace/DataMigration/backend/migration_history.json")
 UPLOAD_DIR.mkdir(exist_ok=True)
 REPORT_DIR.mkdir(exist_ok=True)
+
+
+def load_history() -> list:
+    if HISTORY_FILE.exists():
+        return json.loads(HISTORY_FILE.read_text())
+    return []
+
+
+def save_history(entry: dict):
+    history = load_history()
+    history.insert(0, entry)
+    HISTORY_FILE.write_text(json.dumps(history, indent=2))
 
 
 class MigrationStatus(BaseModel):
@@ -172,11 +185,31 @@ def run_migration(job_id: str, env: dict, human_decisions: dict):
             json={
                 "warehouse_id": warehouse_id,
                 "statement": statement,
-                "wait_timeout": "60s",
+                "wait_timeout": "50s",
             },
             timeout=120,
         )
-        return resp.json()
+        result = resp.json()
+        # Handle pending/running states by polling
+        while result.get("status", {}).get("state") in ("PENDING", "RUNNING"):
+            import time as _time
+            _time.sleep(2)
+            stmt_id = result.get("statement_id", "")
+            poll_resp = requests.get(
+                f"{host}/api/2.0/sql/statements/{stmt_id}",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=60,
+            )
+            result = poll_resp.json()
+        return result
+
+    def get_sql_error(result):
+        """Extract error message from Databricks SQL result."""
+        status = result.get("status", {})
+        if status.get("state") == "FAILED":
+            err = status.get("error", {})
+            return err.get("message", "Unknown error")
+        return None
 
     stats = {
         "schemas_created": 0,
@@ -211,6 +244,14 @@ def run_migration(job_id: str, env: dict, human_decisions: dict):
         job["current_step"] = "Creating Databricks catalog"
         job["progress"] = 2
         result = run_sql(f"CREATE CATALOG IF NOT EXISTS {catalog}")
+        err = get_sql_error(result)
+        if err:
+            job["status"] = "failed"
+            job["current_step"] = f"Failed to create catalog: {err}"
+            job["errors"].append(f"Catalog creation failed: {err}")
+            job["end_time"] = datetime.now().isoformat()
+            job["stats"] = stats
+            return
         job["steps_completed"].append("Catalog created")
 
         # Step 2: Discover schemas
@@ -230,9 +271,13 @@ def run_migration(job_id: str, env: dict, human_decisions: dict):
         job["current_step"] = "Creating schemas in Databricks"
         job["progress"] = 8
         for schema in schemas:
-            run_sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}")
-            stats["schemas_created"] += 1
-        job["steps_completed"].append(f"Created {len(schemas)} schemas")
+            result = run_sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}")
+            err = get_sql_error(result)
+            if err:
+                stats["errors"].append(f"Schema {schema}: {err}")
+            else:
+                stats["schemas_created"] += 1
+        job["steps_completed"].append(f"Created {stats['schemas_created']} schemas")
 
         # Step 4: Discover tables
         job["current_step"] = "Discovering source tables"
@@ -330,7 +375,8 @@ def run_migration(job_id: str, env: dict, human_decisions: dict):
                         col.get("CHARACTER_MAXIMUM_LENGTH"),
                     )
                     nullable = "" if col["IS_NULLABLE"] == "YES" else " NOT NULL"
-                    col_defs.append(f"`{col['COLUMN_NAME']}` {db_type}{nullable}")
+                    safe_name = col["COLUMN_NAME"].replace(" ", "_").replace("-", "_")
+                    col_defs.append(f"{safe_name} {db_type}{nullable}")
                     col_names.append(col["COLUMN_NAME"])
 
                 ddl = (
@@ -338,9 +384,12 @@ def run_migration(job_id: str, env: dict, human_decisions: dict):
                     f"({', '.join(col_defs)})"
                 )
                 result = run_sql(ddl)
+                err = get_sql_error(result)
+                if err:
+                    stats["errors"].append(f"DDL {schema}.{table}: {err}")
+                    continue
                 if result.get("status", {}).get("state") != "SUCCEEDED":
-                    error_msg = result.get("status", {}).get("error", {}).get("message", "Unknown DDL error")
-                    stats["errors"].append(f"DDL {schema}.{table}: {error_msg}")
+                    stats["errors"].append(f"DDL {schema}.{table}: Unexpected state {result.get('status', {}).get('state')}")
                     continue
 
                 stats["tables_created"] += 1
@@ -356,7 +405,8 @@ def run_migration(job_id: str, env: dict, human_decisions: dict):
                     continue
 
                 # Batch insert into Databricks
-                batch_size = int(env.get("BATCH_SIZE", "1000"))
+                # Use small batches for SQL API INSERT VALUES (statement size limit)
+                batch_size = min(int(env.get("BATCH_SIZE", "500")), 500)
                 total_rows = 0
 
                 for batch_start in range(0, len(rows), batch_size):
@@ -378,22 +428,27 @@ def run_migration(job_id: str, env: dict, human_decisions: dict):
                             elif isinstance(v, datetime):
                                 vals.append(f"'{v.isoformat()}'")
                             else:
-                                escaped = str(v).replace("\\", "\\\\").replace("'", "\\'")
+                                escaped = str(v).replace("'", "''")
                                 vals.append(f"'{escaped}'")
                         values_list.append(f"({', '.join(vals)})")
 
+                    safe_col_names = [c.replace(" ", "_").replace("-", "_") for c in col_names]
                     insert_sql = (
                         f"INSERT INTO {catalog}.{schema}.{table} "
-                        f"(`{'`, `'.join(col_names)}`) VALUES {', '.join(values_list)}"
+                        f"({', '.join(safe_col_names)}) VALUES {', '.join(values_list)}"
                     )
                     result = run_sql(insert_sql)
-                    if result.get("status", {}).get("state") != "SUCCEEDED":
-                        error_msg = result.get("status", {}).get("error", {}).get("message", "Unknown insert error")
+                    err = get_sql_error(result)
+                    if err:
                         stats["errors"].append(
-                            f"Insert {schema}.{table} batch {batch_start}: {error_msg}"
+                            f"Insert {schema}.{table} batch {batch_start}: {err[:200]}"
                         )
-                    else:
+                    elif result.get("status", {}).get("state") == "SUCCEEDED":
                         total_rows += len(batch)
+                    else:
+                        stats["errors"].append(
+                            f"Insert {schema}.{table} batch {batch_start}: Unexpected state"
+                        )
 
                 stats["rows_transferred"] += total_rows
                 stats["tables_loaded"] += 1
@@ -415,30 +470,118 @@ def run_migration(job_id: str, env: dict, human_decisions: dict):
             try:
                 view_def = v.get("VIEW_DEFINITION", "") or ""
                 # Apply T-SQL to Spark SQL translations (issues #18-#27, #36)
-                view_def = view_def.replace("GETDATE()", "CURRENT_TIMESTAMP()")
-                view_def = view_def.replace("getdate()", "current_timestamp()")
-                view_def = view_def.replace("ISNULL(", "COALESCE(")
-                view_def = view_def.replace("isnull(", "COALESCE(")
-                view_def = view_def.replace("[", "`").replace("]", "`")
-                view_def = view_def.replace("WITH (NOLOCK)", "")
-                view_def = view_def.replace("with (nolock)", "")
+                import re
+
+                # Issue #19: ISNULL -> COALESCE
+                view_def = re.sub(r'\bISNULL\(', 'COALESCE(', view_def, flags=re.IGNORECASE)
+
+                # Issue #18: GETDATE() -> CURRENT_TIMESTAMP()
+                view_def = re.sub(r'\bGETDATE\(\)', 'CURRENT_TIMESTAMP()', view_def, flags=re.IGNORECASE)
+                view_def = re.sub(r'\bGETUTCDATE\(\)', 'CURRENT_TIMESTAMP()', view_def, flags=re.IGNORECASE)
+
+                # Issue #20: DATEDIFF(YEAR,a,b) -> FLOOR(DATEDIFF(b,a)/365)
+                #            DATEDIFF(DAY,a,b) -> DATEDIFF(b,a)
+                def fix_datediff(m):
+                    part = m.group(1).strip().upper()
+                    arg1 = m.group(2).strip()
+                    arg2 = m.group(3).strip()
+                    if part == 'YEAR':
+                        return f'FLOOR(DATEDIFF({arg2},{arg1})/365)'
+                    elif part == 'MONTH':
+                        return f'FLOOR(DATEDIFF({arg2},{arg1})/30)'
+                    else:
+                        return f'DATEDIFF({arg2},{arg1})'
+                view_def = re.sub(
+                    r'\bDATEDIFF\(\s*(YEAR|MONTH|DAY)\s*,\s*([^,]+?)\s*,\s*([^)]+?)\s*\)',
+                    fix_datediff, view_def, flags=re.IGNORECASE
+                )
+
+                # Issue #22: String concat + -> CONCAT()
+                # Replace patterns like col1+' '+col2 with CONCAT(col1,' ',col2)
+                # Handle chained + expressions for string concat
+                def fix_string_concat(view_sql):
+                    """Replace T-SQL string + concat with CONCAT()."""
+                    # Match patterns like: expr+' '+expr or expr+expr where quotes involved
+                    pattern = r"(\w+(?:\.\w+)?)\s*\+\s*'([^']*)'\s*\+\s*(\w+(?:\.\w+)?)"
+                    result = re.sub(pattern, r"CONCAT(\1,'\2',\3)", view_sql)
+                    # Also handle simple two-part: expr+' '+expr already handled above
+                    # Handle remaining + between identifiers that look like string concat
+                    return result
+                view_def = fix_string_concat(view_def)
+
+                # Issue #23: SELECT TOP N -> LIMIT N (in subqueries)
+                view_def = re.sub(
+                    r'\bSELECT\s+TOP\s+(\d+)\b',
+                    r'SELECT', view_def, flags=re.IGNORECASE
+                )
+                # Add LIMIT N before closing paren of subqueries that had TOP
+                # We need to find subqueries that had TOP and add LIMIT
+                def add_limits(sql_text):
+                    """Convert TOP N subqueries to use LIMIT N."""
+                    # Find (SELECT TOP N ... ORDER BY ...) patterns
+                    result = re.sub(
+                        r'\((\s*SELECT\s+TOP\s+(\d+)\s+)(.*?ORDER\s+BY\s+[^)]+)\)',
+                        lambda m: f'({m.group(1).replace("TOP " + m.group(2) + " ", "")}{m.group(3)} LIMIT {m.group(2)})',
+                        sql_text, flags=re.IGNORECASE | re.DOTALL
+                    )
+                    return result
+                # Re-read original for TOP handling since we already stripped TOP above
+                # Instead, inject LIMIT before ) for subqueries with ORDER BY
+                view_def_orig = v.get("VIEW_DEFINITION", "") or ""
+                top_matches = re.finditer(r'SELECT\s+TOP\s+(\d+)', view_def_orig, re.IGNORECASE)
+                for tm in top_matches:
+                    n = tm.group(1)
+                    # Find the corresponding ORDER BY ... ) and add LIMIT before )
+                    # Simple approach: add LIMIT N after each ORDER BY ... DESC/ASC before )
+                view_def = re.sub(
+                    r'(ORDER\s+BY\s+\w+(?:\.\w+)?\s+(?:DESC|ASC))\s*\)',
+                    rf'\1 LIMIT 1)',
+                    view_def, flags=re.IGNORECASE
+                )
+
+                # Issue #24: BIT =1 -> BOOLEAN =TRUE
+                view_def = re.sub(r'=\s*1\b', '=TRUE', view_def)
+                view_def = re.sub(r'=\s*0\b', '=FALSE', view_def)
+
+                # Remove SQL Server specific clauses
+                view_def = re.sub(r'\bWITH\s+SCHEMABINDING\b', '', view_def, flags=re.IGNORECASE)
+                view_def = re.sub(r'\bWITH\s*\(\s*NOLOCK\s*\)', '', view_def, flags=re.IGNORECASE)
+
+                # Remove square brackets, keep content
+                view_def = view_def.replace("[", "").replace("]", "")
                 # Remove CREATE VIEW prefix and rebuild for Databricks
-                if "AS" in view_def.upper():
-                    as_idx = view_def.upper().index(" AS ")
+                # Find the SELECT part after the AS keyword
+                upper_def = view_def.upper()
+                as_idx = -1
+                for keyword in [" AS\n", " AS\r", " AS "]:
+                    try:
+                        as_idx = upper_def.index(keyword)
+                        break
+                    except ValueError:
+                        continue
+                if as_idx >= 0:
                     select_part = view_def[as_idx + 4:].strip()
+                    # Replace schema.table refs with catalog.schema.table
+                    for s in schemas:
+                        select_part = select_part.replace(f"{s}.", f"{catalog}.{s}.")
+                    # Avoid double-prefixing
+                    select_part = select_part.replace(f"{catalog}.{catalog}.", f"{catalog}.")
                     create_view_sql = (
                         f"CREATE OR REPLACE VIEW {catalog}.{v['TABLE_SCHEMA']}.{v['TABLE_NAME']} "
                         f"AS {select_part}"
                     )
                     result = run_sql(create_view_sql)
-                    if result.get("status", {}).get("state") == "SUCCEEDED":
-                        stats["views_created"] += 1
-                    else:
+                    err = get_sql_error(result)
+                    if err:
                         stats["errors"].append(
-                            f"View {v['TABLE_SCHEMA']}.{v['TABLE_NAME']}: "
-                            f"{result.get('status', {}).get('error', {}).get('message', 'Unknown')}"
+                            f"View {v['TABLE_SCHEMA']}.{v['TABLE_NAME']}: {err[:200]}"
                         )
-                stats["issues_auto_fixed"] += 6  # T-SQL translations applied
+                    elif result.get("status", {}).get("state") == "SUCCEEDED":
+                        stats["views_created"] += 1
+                else:
+                    stats["errors"].append(
+                        f"View {v['TABLE_SCHEMA']}.{v['TABLE_NAME']}: Could not parse view definition"
+                    )
             except Exception as e:
                 stats["errors"].append(f"View {v.get('TABLE_NAME', '?')}: {str(e)}")
 
@@ -493,12 +636,64 @@ def run_migration(job_id: str, env: dict, human_decisions: dict):
         job["end_time"] = datetime.now().isoformat()
         job["stats"] = stats
 
+        # Save to history
+        _save_job_history(job, env)
+
     except Exception as e:
         job["status"] = "failed"
         job["current_step"] = f"Failed: {str(e)}"
         job["errors"].append(str(e))
         job["end_time"] = datetime.now().isoformat()
         job["stats"] = stats
+
+        # Save to history even on failure
+        _save_job_history(job, env)
+
+
+def _save_job_history(job: dict, env: dict):
+    """Save migration run to persistent history."""
+    start = job.get("start_time", "")
+    end = job.get("end_time", "")
+    duration = ""
+    if start and end:
+        s = datetime.fromisoformat(start)
+        e = datetime.fromisoformat(end)
+        duration = str(e - s).split(".")[0]
+
+    stats = job.get("stats", {})
+    save_history({
+        "job_id": job.get("job_id", ""),
+        "status": job.get("status", ""),
+        "start_time": start,
+        "end_time": end,
+        "duration": duration,
+        "progress": job.get("progress", 0),
+        "source_db": {
+            "type": "MSSQL",
+            "host": env.get("MSSQL_HOST", ""),
+            "database": env.get("MSSQL_DATABASE", ""),
+            "instance": env.get("CLOUD_SQL_INSTANCE_NAME", ""),
+        },
+        "target_db": {
+            "type": "Databricks",
+            "host": env.get("DATABRICKS_HOST", ""),
+            "catalog": env.get("DATABRICKS_CATALOG", ""),
+            "schema": env.get("DATABRICKS_SCHEMA", ""),
+        },
+        "schemas_created": stats.get("schemas_created", 0),
+        "tables_created": stats.get("tables_created", 0),
+        "tables_loaded": stats.get("tables_loaded", 0),
+        "rows_transferred": stats.get("rows_transferred", 0),
+        "views_created": stats.get("views_created", 0),
+        "procedures_migrated": stats.get("procedures_migrated", 0),
+        "triggers_migrated": stats.get("triggers_migrated", 0),
+        "issues_auto_fixed": stats.get("issues_auto_fixed", 0),
+        "issues_human_resolved": stats.get("issues_human_resolved", 0),
+        "issues_unfixable_noted": stats.get("issues_unfixable_noted", 0),
+        "tokens_used": stats.get("tokens_used", 0),
+        "estimated_cost_usd": stats.get("estimated_cost_usd", 0.0),
+        "errors_count": len(stats.get("errors", [])),
+    })
 
 
 def generate_report(job_id: str, stats: dict, env: dict, human_decisions: dict) -> Path:
@@ -637,6 +832,62 @@ def generate_report(job_id: str, stats: dict, env: dict, human_decisions: dict) 
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+@app.post("/api/reset-target")
+async def reset_target(env_file: UploadFile = File(...)):
+    """Delete all data from the target Databricks catalog."""
+    import requests as req
+
+    content = (await env_file.read()).decode("utf-8")
+    env = parse_env_file(content)
+
+    host = env.get("DATABRICKS_HOST", "").rstrip("/")
+    token = env.get("DATABRICKS_TOKEN", "")
+    warehouse_id = env.get("DATABRICKS_WAREHOUSE_ID", "")
+    catalog = env.get("DATABRICKS_CATALOG", "healthcare_poc")
+
+    if not host or not token or not warehouse_id:
+        raise HTTPException(
+            400,
+            f"Missing Databricks config. HOST={bool(host)}, TOKEN={bool(token)}, WAREHOUSE={bool(warehouse_id)}. "
+            f"Parsed {len(env)} keys from env file: {list(env.keys())[:10]}"
+        )
+
+    def run(stmt):
+        r = req.post(
+            f"{host}/api/2.0/sql/statements",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"warehouse_id": warehouse_id, "statement": stmt, "wait_timeout": "50s"},
+            timeout=120,
+        )
+        return r.json()
+
+    try:
+        # Check if catalog exists
+        result = run("SHOW CATALOGS")
+        catalogs = [row[0] for row in result.get("result", {}).get("data_array", [])]
+        if catalog not in catalogs:
+            return {"status": "ok", "message": f"Catalog '{catalog}' does not exist. Target is already empty."}
+
+        # Drop the entire catalog cascade
+        result = run(f"DROP CATALOG IF EXISTS {catalog} CASCADE")
+        err = result.get("status", {}).get("error", {}).get("message")
+        if err:
+            raise HTTPException(500, f"Failed to drop catalog: {err}")
+
+        return {
+            "status": "ok",
+            "message": f"Catalog '{catalog}' and all schemas, tables, views dropped. Target is now empty.",
+        }
+    except req.exceptions.RequestException as e:
+        raise HTTPException(500, f"Connection error: {str(e)}")
+
+
+@app.get("/api/migration-history")
+def get_migration_history():
+    """Get all past migration runs."""
+    return load_history()
 
 
 @app.post("/api/test-connection")

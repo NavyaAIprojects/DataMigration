@@ -6,5 +6,7 @@ __pycache__/
 backend/uploads/
 backend/reports/
 docs/.env
+docs/env-config.env
+docs/migration-decisions.env
 *.log
 /tmp/

@@ -473,19 +473,23 @@ function App() {
                   <div className="stats-grid">
                     {(() => {
                       const s = migrationJob.stats;
-                      const src = sourceInfo || {};
-                      const tablesOk = !src.table_count || s.tables_created >= src.table_count;
-                      const viewsOk = !src.view_count || s.views_created >= src.view_count;
-                      const procsOk = !src.proc_count || s.procedures_migrated >= src.proc_count;
-                      const triggersOk = !src.trigger_count || s.triggers_migrated >= src.trigger_count;
+                      const src = s.source_counts || sourceInfo || {};
+                      const srcTables = src.tables || src.table_count || 0;
+                      const srcViews = src.views || src.view_count || 0;
+                      const srcProcs = src.procs || src.proc_count || 0;
+                      const srcTriggers = src.triggers || src.trigger_count || 0;
+                      const tablesOk = !srcTables || s.tables_created >= srcTables;
+                      const viewsOk = !srcViews || s.views_created >= srcViews;
+                      const procsOk = !srcProcs || s.procedures_migrated >= srcProcs;
+                      const triggersOk = !srcTriggers || s.triggers_migrated >= srcTriggers;
                       const validOk = s.validation_pct === 100;
                       return (<>
                         <div className="stat-card blue"><div className="stat-value">{s.schemas_created}</div><div className="stat-label">Schemas</div></div>
-                        <div className={`stat-card ${tablesOk ? "blue" : "red"}`}><div className="stat-value">{s.tables_created}{!tablesOk && src.table_count ? `/${src.table_count}` : ""}</div><div className="stat-label">Tables</div></div>
+                        <div className={`stat-card ${tablesOk ? "blue" : "red"}`}><div className="stat-value">{s.tables_created}{!tablesOk ? `/${srcTables}` : ""}</div><div className="stat-label">Tables</div></div>
                         <div className="stat-card blue"><div className="stat-value">{s.rows_transferred?.toLocaleString()}</div><div className="stat-label">Rows</div></div>
-                        <div className={`stat-card ${viewsOk ? "purple" : "red"}`}><div className="stat-value">{s.views_created}{!viewsOk && src.view_count ? `/${src.view_count}` : ""}</div><div className="stat-label">Views</div></div>
-                        <div className={`stat-card ${procsOk ? "purple" : "red"}`}><div className="stat-value">{s.procedures_migrated}{!procsOk && src.proc_count ? `/${src.proc_count}` : ""}</div><div className="stat-label">Procedures</div></div>
-                        <div className={`stat-card ${triggersOk ? "purple" : "red"}`}><div className="stat-value">{s.triggers_migrated}{!triggersOk && src.trigger_count ? `/${src.trigger_count}` : ""}</div><div className="stat-label">Triggers</div></div>
+                        <div className={`stat-card ${viewsOk ? "purple" : "red"}`}><div className="stat-value">{s.views_created}{!viewsOk ? `/${srcViews}` : ""}</div><div className="stat-label">Views</div></div>
+                        <div className={`stat-card ${procsOk ? "purple" : "red"}`}><div className="stat-value">{s.procedures_migrated}{!procsOk ? `/${srcProcs}` : ""}</div><div className="stat-label">Procedures</div></div>
+                        <div className={`stat-card ${triggersOk ? "purple" : "red"}`}><div className="stat-value">{s.triggers_migrated}{!triggersOk ? `/${srcTriggers}` : ""}</div><div className="stat-label">Triggers</div></div>
                         <div className={`stat-card ${validOk ? "green" : "red"}`}><div className="stat-value">{s.validation_pct}%</div><div className="stat-label">Validated</div></div>
                         <div className="stat-card green"><div className="stat-value">{s.issues_auto_fixed}</div><div className="stat-label">Auto-Fixed</div></div>
                         <div className="stat-card green"><div className="stat-value">{s.issues_human_resolved}</div><div className="stat-label">Human Resolved</div></div>

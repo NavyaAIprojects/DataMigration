@@ -237,6 +237,18 @@ def schema_agent(agent: AgentStatus, env: dict, exclude_schemas: list) -> dict:
     for schema, table in tables:
         if (schema, table) not in table_rows:
             table_rows[(schema, table)] = 0
+
+    # Count source views, procs, triggers for validation
+    source_counts = {"tables": len(tables), "views": 0, "procs": 0, "triggers": 0}
+    try:
+        cursor.execute("SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.VIEWS WHERE TABLE_SCHEMA NOT IN ('sys','INFORMATION_SCHEMA')")
+        source_counts["views"] = cursor.fetchone()["cnt"]
+        cursor.execute("SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_TYPE='PROCEDURE' AND ROUTINE_SCHEMA NOT IN ('sys','INFORMATION_SCHEMA')")
+        source_counts["procs"] = cursor.fetchone()["cnt"]
+        cursor.execute("SELECT COUNT(*) AS cnt FROM sys.triggers")
+        source_counts["triggers"] = cursor.fetchone()["cnt"]
+    except Exception:
+        pass
     conn.close()
 
     agent.update(60, f"Creating {len(schemas)} schemas...")
@@ -252,7 +264,7 @@ def schema_agent(agent: AgentStatus, env: dict, exclude_schemas: list) -> dict:
         agent.update(60 + (40 * (i + 1) / max(len(schemas), 1)), f"Created schema {schema}")
 
     agent.complete(f"Created {created} schemas, discovered {len(tables)} tables")
-    return {"schemas": schemas, "tables": tables, "table_rows": table_rows, "schemas_created": created, "errors": errors}
+    return {"schemas": schemas, "tables": tables, "table_rows": table_rows, "schemas_created": created, "errors": errors, "source_counts": source_counts}
 
 
 def table_agent(agent: AgentStatus, env: dict, schema: str, table: str, total_rows: int) -> dict:
@@ -429,7 +441,21 @@ def view_agent(agent: AgentStatus, env: dict, schemas: list) -> dict:
             view_def = re.sub(r"(\w+(?:\.\w+)?)\s*\+\s*'", r"\1 || '", view_def)
             view_def = re.sub(r"'\s*\+\s*(\w+(?:\.\w+)?)", r"' || \1", view_def)
 
-            # TOP N -> remove (add LIMIT later)
+            # Correlated TOP 1 subqueries -> max_by/min_by (Databricks compatible)
+            def fix_top1(m):
+                col = m.group(1).strip()
+                rest = m.group(2).strip()
+                sort_col = m.group(3).strip()
+                direction = m.group(4).strip().upper()
+                func = "max_by" if direction == "DESC" else "min_by"
+                return f"SELECT {func}({col}, {sort_col}) FROM {rest}"
+
+            view_def = re.sub(
+                r'\bSELECT\s+TOP\s+1\s+(\w+)\s+FROM\s+(.*?)\s+ORDER\s+BY\s+(\w+(?:\.\w+)?)\s+(DESC|ASC)',
+                fix_top1, view_def, flags=re.IGNORECASE | re.DOTALL
+            )
+
+            # Generic TOP N -> LIMIT (for non-correlated cases)
             view_def = re.sub(r'\bSELECT\s+TOP\s+(\d+)\b', r'SELECT', view_def, flags=re.IGNORECASE)
             view_def = re.sub(
                 r'(ORDER\s+BY\s+\w+(?:\.\w+)?\s+(?:DESC|ASC))\s*\)',
@@ -765,6 +791,7 @@ def run_migration(job_id: str, env: dict, human_decisions: dict):
         tables = schema_result.get("tables", [])
         table_rows = schema_result.get("table_rows", {})
         stats["schemas_created"] = schema_result.get("schemas_created", 0)
+        stats["source_counts"] = schema_result.get("source_counts", {})
         stats["errors"].extend(schema_result.get("errors", []))
 
         # ── Phase 2: Table Agents (parallel) ──────────────────────────

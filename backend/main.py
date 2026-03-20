@@ -511,12 +511,8 @@ def view_agent(agent: AgentStatus, env: dict, schemas: list) -> dict:
                 fix_top1, view_def, flags=re.IGNORECASE | re.DOTALL
             )
 
-            # Generic TOP N -> LIMIT (for non-correlated cases)
+            # Generic TOP N -> remove TOP keyword (already handled by ROW_NUMBER/max_by above)
             view_def = re.sub(r'\bSELECT\s+TOP\s+(\d+)\b', r'SELECT', view_def, flags=re.IGNORECASE)
-            view_def = re.sub(
-                r'(ORDER\s+BY\s+\w+(?:\.\w+)?\s+(?:DESC|ASC))\s*\)',
-                r'\1 LIMIT 1)', view_def, flags=re.IGNORECASE
-            )
 
             # BIT column comparisons (is_xxx=1 -> is_xxx=TRUE)
             view_def = re.sub(r'(\bis_\w+)\s*=\s*1\b', r'\1 = TRUE', view_def, flags=re.IGNORECASE)

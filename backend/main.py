@@ -718,7 +718,131 @@ def report_agent(agent: AgentStatus, job_id: str, stats: dict, env: dict, human_
 
     agent.update(10, "Writing executive summary...")
 
-    # ── Page 2: Executive Summary ──
+    # ── Page 2: Architecture Diagram ──
+    pdf.add_page("L")  # Landscape
+    heading("Migration Architecture - Multi-Agent Pipeline", 18)
+    pdf.ln(2)
+
+    def box(x, y, w, h, label, sublabel="", color=(41, 52, 82)):
+        pdf.set_fill_color(*color)
+        pdf.set_draw_color(100, 120, 180)
+        pdf.rect(x, y, w, h, style="DF")
+        pdf.set_xy(x, y + 2)
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.set_text_color(255, 255, 255)
+        pdf.cell(w, 5, label, align="C")
+        if sublabel:
+            pdf.set_xy(x, y + 7)
+            pdf.set_font("Helvetica", "", 7)
+            pdf.set_text_color(200, 210, 230)
+            pdf.cell(w, 4, sublabel, align="C")
+        pdf.set_text_color(0, 0, 0)
+
+    def arrow_right(x1, y, x2):
+        pdf.set_draw_color(100, 160, 220)
+        pdf.set_line_width(0.5)
+        pdf.line(x1, y, x2, y)
+        pdf.line(x2 - 3, y - 2, x2, y)
+        pdf.line(x2 - 3, y + 2, x2, y)
+
+    def arrow_down(x, y1, y2):
+        pdf.set_draw_color(100, 160, 220)
+        pdf.set_line_width(0.5)
+        pdf.line(x, y1, x, y2)
+        pdf.line(x - 2, y2 - 3, x, y2)
+        pdf.line(x + 2, y2 - 3, x, y2)
+
+    def phase_label(x, y, text):
+        pdf.set_xy(x, y)
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.set_text_color(255, 180, 50)
+        pdf.cell(30, 5, text)
+        pdf.set_text_color(0, 0, 0)
+
+    base_y = 38
+
+    # Source & Target databases
+    box(10, base_y, 42, 25, "MSSQL Source", "Cloud SQL (SQL Server)", (50, 80, 50))
+    box(235, base_y, 42, 25, "Databricks Target", "Delta Lake (Unity Catalog)", (130, 50, 50))
+
+    # Frontend + Backend
+    box(10, base_y + 35, 42, 18, "React Frontend", "Cloud Run :8080", (60, 60, 100))
+    arrow_right(52, base_y + 44, 65)
+    box(65, base_y + 35, 42, 18, "FastAPI Backend", "Cloud Run :8000", (60, 60, 100))
+
+    # Orchestrator
+    arrow_down(86, base_y + 53, base_y + 62)
+    box(65, base_y + 62, 42, 14, "Orchestrator", "Thread Manager", (80, 60, 30))
+
+    # Phase 1
+    phase_label(115, base_y + 38, "Phase 1")
+    arrow_right(107, base_y + 45, 120)
+    box(120, base_y + 35, 40, 18, "SchemaAgent", "Catalog + Schemas", (41, 52, 82))
+    arrow_right(160, base_y + 40, 235)
+    pdf.set_draw_color(100, 160, 100)
+    pdf.line(120, base_y + 44, 52, base_y + 12)  # connect to MSSQL
+
+    # Phase 2
+    phase_label(115, base_y + 60, "Phase 2")
+    arrow_right(107, base_y + 69, 120)
+    p2_y = base_y + 56
+    box(120, p2_y, 45, 20, f"TableAgent x{MAX_PARALLEL_WORKERS}", "Parallel DDL + INSERT", (41, 52, 82))
+    # Parallel worker indicators
+    for i in range(min(MAX_PARALLEL_WORKERS, 5)):
+        bx = 168 + i * 13
+        box(bx, p2_y + 2, 11, 16, f"T{i+1}", "", (55, 65, 95))
+    pdf.set_font("Helvetica", "", 7)
+    pdf.set_xy(233, p2_y + 7)
+    pdf.cell(10, 5, "...")
+    arrow_right(232, p2_y + 10, 235)
+    pdf.set_draw_color(100, 160, 100)
+    pdf.line(120, p2_y + 10, 52, base_y + 15)  # to MSSQL
+
+    # Phase 3 (parallel: views + procs + validation)
+    phase_label(115, base_y + 82, "Phase 3")
+    arrow_right(107, base_y + 88, 120)
+    p3_y = base_y + 80
+    box(120, p3_y, 35, 14, "ViewAgent", "T-SQL -> Spark SQL", (41, 52, 82))
+    box(158, p3_y, 35, 14, "ProcAgent", "Document Procs", (41, 52, 82))
+    box(196, p3_y, 40, 14, "ValidationAgent", "Row Count Check", (41, 52, 82))
+    arrow_right(236, p3_y + 7, 235)
+
+    # Parallel bracket
+    pdf.set_draw_color(255, 180, 50)
+    pdf.set_line_width(0.3)
+    pdf.line(118, p3_y, 118, p3_y + 14)
+    pdf.set_font("Helvetica", "I", 7)
+    pdf.set_text_color(255, 180, 50)
+    pdf.set_xy(115, p3_y + 14)
+    pdf.cell(40, 4, "all 3 parallel", align="L")
+    pdf.set_text_color(0, 0, 0)
+
+    # Phase 4
+    phase_label(115, base_y + 100, "Phase 4")
+    arrow_right(107, base_y + 107, 120)
+    box(120, base_y + 98, 40, 14, "ReportAgent", "Executive PDF", (100, 50, 50))
+
+    # Legend
+    pdf.set_draw_color(0, 0, 0)
+    pdf.set_line_width(0.2)
+    ly = base_y + 120
+    pdf.set_font("Helvetica", "B", 9)
+    pdf.set_xy(10, ly)
+    pdf.cell(0, 5, "Pipeline Flow:")
+    pdf.set_font("Helvetica", "", 8)
+    pdf.set_xy(10, ly + 6)
+    pdf.cell(0, 4, "1. SchemaAgent discovers source, creates catalog/schemas on target")
+    pdf.set_xy(10, ly + 11)
+    pdf.cell(0, 4, f"2. {MAX_PARALLEL_WORKERS} TableAgents migrate tables in parallel (each with own MSSQL connection, batch INSERT to Databricks)")
+    pdf.set_xy(10, ly + 16)
+    pdf.cell(0, 4, "3. ViewAgent + ProcAgent + ValidationAgent run simultaneously (views translated, procs documented, row counts verified)")
+    pdf.set_xy(10, ly + 21)
+    pdf.cell(0, 4, "4. ReportAgent generates this executive PDF report")
+
+    pdf.set_line_width(0.2)
+    agent.update(8, "Architecture diagram drawn...")
+
+    # ── Page 3: Executive Summary ──
     pdf.add_page()
     heading("1. Executive Summary", 18)
     pdf.ln(3)

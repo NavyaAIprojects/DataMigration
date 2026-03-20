@@ -312,7 +312,7 @@ def table_agent(agent: AgentStatus, env: dict, schema: str, table: str, total_ro
             col_names.append(col["COLUMN_NAME"])
 
         agent.update(10, "Creating table DDL...")
-        ddl = f"CREATE TABLE IF NOT EXISTS {catalog}.{schema}.{table} ({', '.join(col_defs)})"
+        ddl = f"CREATE OR REPLACE TABLE {catalog}.{schema}.{table} ({', '.join(col_defs)})"
         result = run_sql(host, token, warehouse_id, ddl)
         err = get_sql_error(result)
         if err:

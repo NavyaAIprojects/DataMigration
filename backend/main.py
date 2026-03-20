@@ -718,22 +718,21 @@ def report_agent(agent: AgentStatus, job_id: str, stats: dict, env: dict, human_
 
     agent.update(10, "Writing executive summary...")
 
-    # ── Page 2: Architecture Diagram ──
+    # ── Page 2: End-to-End Project Architecture ──
     pdf.add_page("L")  # Landscape
-    heading("Migration Architecture - Multi-Agent Pipeline", 18)
-    pdf.ln(2)
+    heading("Project Architecture - End-to-End Workflow", 16)
 
     def box(x, y, w, h, label, sublabel="", color=(41, 52, 82)):
         pdf.set_fill_color(*color)
         pdf.set_draw_color(100, 120, 180)
         pdf.rect(x, y, w, h, style="DF")
         pdf.set_xy(x, y + 2)
-        pdf.set_font("Helvetica", "B", 9)
+        pdf.set_font("Helvetica", "B", 8)
         pdf.set_text_color(255, 255, 255)
         pdf.cell(w, 5, label, align="C")
         if sublabel:
             pdf.set_xy(x, y + 7)
-            pdf.set_font("Helvetica", "", 7)
+            pdf.set_font("Helvetica", "", 6)
             pdf.set_text_color(200, 210, 230)
             pdf.cell(w, 4, sublabel, align="C")
         pdf.set_text_color(0, 0, 0)
@@ -759,85 +758,117 @@ def report_agent(agent: AgentStatus, job_id: str, stats: dict, env: dict, human_
         pdf.cell(30, 5, text)
         pdf.set_text_color(0, 0, 0)
 
-    base_y = 38
+    def section_header(x, y, text, color=(80, 80, 80)):
+        pdf.set_xy(x, y)
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.set_text_color(*color)
+        pdf.cell(0, 5, text)
+        pdf.set_text_color(0, 0, 0)
 
-    # Source & Target databases
-    box(10, base_y, 42, 25, "MSSQL Source", "Cloud SQL (SQL Server)", (50, 80, 50))
-    box(235, base_y, 42, 25, "Databricks Target", "Delta Lake (Unity Catalog)", (130, 50, 50))
+    # ── ROW 1: Prerequisites (y=30) ──
+    section_header(10, 28, "PREREQUISITES", (180, 100, 40))
+    r1 = 34
+    box(10, r1, 42, 18, "MSSQL on GCP", "Cloud SQL (SQL Server)", (50, 80, 50))
+    box(56, r1, 42, 18, "Source Data Loaded", "Tables, Views, Procs", (50, 80, 50))
+    box(102, r1, 50, 18, "Known Compatibility Issues", "66 issues identified", (150, 80, 30))
+    box(156, r1, 42, 18, "Databricks Ready", "Unity Catalog + Warehouse", (130, 50, 50))
+    box(202, r1, 42, 18, "migration-decisions.env", "14 human decisions", (100, 80, 40))
+    arrow_right(52, r1 + 9, 56)
+    arrow_right(98, r1 + 9, 102)
+    arrow_right(152, r1 + 9, 156)
+    arrow_right(198, r1 + 9, 202)
 
-    # Frontend + Backend
-    box(10, base_y + 35, 42, 18, "React Frontend", "Cloud Run :8080", (60, 60, 100))
-    arrow_right(52, base_y + 44, 65)
-    box(65, base_y + 35, 42, 18, "FastAPI Backend", "Cloud Run :8000", (60, 60, 100))
+    # ── ROW 2: Development (y=60) ──
+    section_header(10, 56, "DEVELOPMENT & DEPLOYMENT", (40, 100, 180))
+    r2 = 62
+    box(10, r2, 35, 18, "Plan & Design", "Architecture + Agents", (60, 60, 100))
+    arrow_right(45, r2 + 9, 49)
+    box(49, r2, 35, 18, "React Frontend", "TypeScript + CSS", (60, 60, 100))
+    arrow_right(84, r2 + 9, 88)
+    box(88, r2, 35, 18, "FastAPI Backend", "Python + Agents", (60, 60, 100))
+    arrow_right(123, r2 + 9, 127)
+    box(127, r2, 35, 18, "Docker Package", "Containerize FE + BE", (80, 60, 30))
+    arrow_right(162, r2 + 9, 166)
+    box(166, r2, 35, 18, "GitHub Push", "CI/CD Trigger", (30, 30, 30))
+    arrow_right(201, r2 + 9, 205)
+    box(205, r2, 42, 18, "GCP Cloud Run", "Auto Deploy via GA", (30, 80, 130))
+    # Arrow down from Cloud Run to app usage
+    arrow_down(226, r2 + 18, r2 + 28)
 
-    # Orchestrator
-    arrow_down(86, base_y + 53, base_y + 62)
-    box(65, base_y + 62, 42, 14, "Orchestrator", "Thread Manager", (80, 60, 30))
+    # ── ROW 3: App Usage + Migration Pipeline (y=92) ──
+    section_header(10, 88, "MIGRATION EXECUTION (User runs the app)", (40, 140, 40))
+    r3 = 94
 
-    # Phase 1
-    phase_label(115, base_y + 38, "Phase 1")
-    arrow_right(107, base_y + 45, 120)
-    box(120, base_y + 35, 40, 18, "SchemaAgent", "Catalog + Schemas", (41, 52, 82))
-    arrow_right(160, base_y + 40, 235)
-    pdf.set_draw_color(100, 160, 100)
-    pdf.line(120, base_y + 44, 52, base_y + 12)  # connect to MSSQL
+    # User -> Frontend -> Backend -> Orchestrator
+    box(10, r3, 30, 16, "User", "Browser", (80, 80, 80))
+    arrow_right(40, r3 + 8, 44)
+    box(44, r3, 38, 16, "React Frontend", "Cloud Run :8080", (60, 60, 100))
+    arrow_right(82, r3 + 8, 86)
+    box(86, r3, 38, 16, "FastAPI Backend", "Cloud Run :8000", (60, 60, 100))
+    arrow_right(124, r3 + 8, 128)
+    box(128, r3, 32, 16, "Orchestrator", "Thread Manager", (80, 60, 30))
 
-    # Phase 2
-    phase_label(115, base_y + 60, "Phase 2")
-    arrow_right(107, base_y + 69, 120)
-    p2_y = base_y + 56
-    box(120, p2_y, 45, 20, f"TableAgent x{MAX_PARALLEL_WORKERS}", "Parallel DDL + INSERT", (41, 52, 82))
-    # Parallel worker indicators
-    for i in range(min(MAX_PARALLEL_WORKERS, 5)):
-        bx = 168 + i * 13
-        box(bx, p2_y + 2, 11, 16, f"T{i+1}", "", (55, 65, 95))
-    pdf.set_font("Helvetica", "", 7)
-    pdf.set_xy(233, p2_y + 7)
-    pdf.cell(10, 5, "...")
-    arrow_right(232, p2_y + 10, 235)
-    pdf.set_draw_color(100, 160, 100)
-    pdf.line(120, p2_y + 10, 52, base_y + 15)  # to MSSQL
+    # Source & Target on the sides
+    box(10, r3 + 22, 32, 14, "MSSQL Source", "Cloud SQL", (50, 80, 50))
+    box(248, r3 + 22, 32, 14, "Databricks", "Delta Lake", (130, 50, 50))
 
-    # Phase 3 (parallel: views + procs + validation)
-    phase_label(115, base_y + 82, "Phase 3")
-    arrow_right(107, base_y + 88, 120)
-    p3_y = base_y + 80
-    box(120, p3_y, 35, 14, "ViewAgent", "T-SQL -> Spark SQL", (41, 52, 82))
-    box(158, p3_y, 35, 14, "ProcAgent", "Document Procs", (41, 52, 82))
-    box(196, p3_y, 40, 14, "ValidationAgent", "Row Count Check", (41, 52, 82))
-    arrow_right(236, p3_y + 7, 235)
+    # Phase boxes
+    p_x = 164
+    phase_label(p_x - 4, r3 - 4, "Phase 1")
+    box(p_x, r3, 30, 14, "SchemaAgent", "Catalog+Schemas", (41, 52, 82))
+    arrow_right(160, r3 + 7, p_x)
 
+    phase_label(p_x - 4, r3 + 16, "Phase 2")
+    box(p_x, r3 + 20, 38, 14, f"TableAgent x{MAX_PARALLEL_WORKERS}", "Parallel DDL+INSERT", (41, 52, 82))
+    # Small parallel worker boxes
+    for i in range(4):
+        bx = p_x + 40 + i * 10
+        box(bx, r3 + 21, 8, 12, f"T{i+1}", "", (55, 65, 95))
+
+    phase_label(p_x - 4, r3 + 36, "Phase 3")
+    box(p_x, r3 + 40, 26, 12, "ViewAgent", "T-SQL->Spark", (41, 52, 82))
+    box(p_x + 28, r3 + 40, 26, 12, "ProcAgent", "Doc Procs", (41, 52, 82))
+    box(p_x + 56, r3 + 40, 28, 12, "ValidationAgent", "Row Counts", (41, 52, 82))
     # Parallel bracket
     pdf.set_draw_color(255, 180, 50)
     pdf.set_line_width(0.3)
-    pdf.line(118, p3_y, 118, p3_y + 14)
-    pdf.set_font("Helvetica", "I", 7)
+    pdf.line(p_x - 2, r3 + 40, p_x - 2, r3 + 52)
+    pdf.set_font("Helvetica", "I", 6)
     pdf.set_text_color(255, 180, 50)
-    pdf.set_xy(115, p3_y + 14)
-    pdf.cell(40, 4, "all 3 parallel", align="L")
+    pdf.set_xy(p_x - 6, r3 + 52)
+    pdf.cell(30, 3, "all 3 parallel")
     pdf.set_text_color(0, 0, 0)
 
-    # Phase 4
-    phase_label(115, base_y + 100, "Phase 4")
-    arrow_right(107, base_y + 107, 120)
-    box(120, base_y + 98, 40, 14, "ReportAgent", "Executive PDF", (100, 50, 50))
+    phase_label(p_x - 4, r3 + 56, "Phase 4")
+    box(p_x, r3 + 60, 30, 12, "ReportAgent", "Executive PDF", (100, 50, 50))
 
-    # Legend
+    # Arrows from agents to target
+    arrow_right(p_x + 30, r3 + 7, 248)
+    arrow_right(p_x + 80, r3 + 27, 248)
+    arrow_right(p_x + 84, r3 + 46, 248)
+
+    # Lines from source to agents
+    pdf.set_draw_color(100, 160, 100)
+    pdf.set_line_width(0.4)
+    pdf.line(42, r3 + 29, p_x, r3 + 7)
+    pdf.line(42, r3 + 29, p_x, r3 + 27)
+
+    # ── Legend ──
     pdf.set_draw_color(0, 0, 0)
     pdf.set_line_width(0.2)
-    ly = base_y + 120
-    pdf.set_font("Helvetica", "B", 9)
+    ly = r3 + 76
+    pdf.set_font("Helvetica", "B", 8)
     pdf.set_xy(10, ly)
-    pdf.cell(0, 5, "Pipeline Flow:")
-    pdf.set_font("Helvetica", "", 8)
-    pdf.set_xy(10, ly + 6)
-    pdf.cell(0, 4, "1. SchemaAgent discovers source, creates catalog/schemas on target")
-    pdf.set_xy(10, ly + 11)
-    pdf.cell(0, 4, f"2. {MAX_PARALLEL_WORKERS} TableAgents migrate tables in parallel (each with own MSSQL connection, batch INSERT to Databricks)")
-    pdf.set_xy(10, ly + 16)
-    pdf.cell(0, 4, "3. ViewAgent + ProcAgent + ValidationAgent run simultaneously (views translated, procs documented, row counts verified)")
-    pdf.set_xy(10, ly + 21)
-    pdf.cell(0, 4, "4. ReportAgent generates this executive PDF report")
+    pdf.cell(0, 4, "Workflow:")
+    pdf.set_font("Helvetica", "", 7)
+    pdf.set_xy(10, ly + 5)
+    pdf.cell(0, 4, "1. Prerequisites: MSSQL installed on GCP Cloud SQL, source data loaded (with known compatibility issues), Databricks target ready, decision file prepared")
+    pdf.set_xy(10, ly + 10)
+    pdf.cell(0, 4, "2. Development: Plan architecture, build React UI + FastAPI backend with multi-agent pipeline, containerize with Docker")
+    pdf.set_xy(10, ly + 15)
+    pdf.cell(0, 4, "3. Deployment: Push to GitHub, CI/CD (GitHub Actions) auto-builds and deploys both services to GCP Cloud Run")
+    pdf.set_xy(10, ly + 20)
+    pdf.cell(0, 4, "4. Execution: User opens app, clicks Migrate, orchestrator runs 4-phase agent pipeline: Schema -> Tables (parallel) -> Views+Procs+Validation (parallel) -> Report")
 
     pdf.set_line_width(0.2)
     agent.update(8, "Architecture diagram drawn...")

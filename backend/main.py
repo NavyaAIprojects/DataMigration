@@ -441,7 +441,37 @@ def view_agent(agent: AgentStatus, env: dict, schemas: list) -> dict:
             view_def = re.sub(r"(\w+(?:\.\w+)?)\s*\+\s*'", r"\1 || '", view_def)
             view_def = re.sub(r"'\s*\+\s*(\w+(?:\.\w+)?)", r"' || \1", view_def)
 
-            # Correlated TOP 1 subqueries -> max_by/min_by (Databricks compatible)
+            # Correlated TOP 1 in JOIN ON -> ROW_NUMBER window (Databricks compatible)
+            # Pattern: JOIN table alias ON alias.col=(SELECT TOP 1 col FROM table WHERE corr=ref ORDER BY sort DIR)
+            def fix_correlated_join(m):
+                join_type = (m.group(1) or "").strip()
+                table = m.group(2).strip()
+                alias = m.group(3).strip()
+                corr_col = m.group(4).strip()
+                parent_ref = m.group(5).strip()
+                extra_where = m.group(6)
+                sort_col = m.group(7).strip()
+                direction = m.group(8).strip().upper()
+                where_clause = ""
+                if extra_where:
+                    where_clause = f" WHERE {extra_where.strip()}"
+                return (
+                    f"{join_type} JOIN (SELECT *, ROW_NUMBER() OVER "
+                    f"(PARTITION BY {corr_col} ORDER BY {sort_col} {direction}) AS _rn "
+                    f"FROM {table}{where_clause}) {alias} "
+                    f"ON {parent_ref} = {alias}.{corr_col} AND {alias}._rn = 1"
+                )
+
+            view_def = re.sub(
+                r'(LEFT\s+)?JOIN\s+(\w+(?:\.\w+)?)\s+(\w+)\s+ON\s+\w+\.\w+\s*=\s*\(\s*'
+                r'SELECT\s+TOP\s+1\s+\w+\s+FROM\s+\w+(?:\.\w+)?\s+'
+                r'WHERE\s+(\w+)\s*=\s*(\w+\.\w+)'
+                r'(?:\s+AND\s+(.*?))?'
+                r'\s+ORDER\s+BY\s+(\w+(?:\.\w+)?)\s+(DESC|ASC)\s*\)',
+                fix_correlated_join, view_def, flags=re.IGNORECASE | re.DOTALL
+            )
+
+            # Non-correlated TOP 1 subqueries -> max_by/min_by
             def fix_top1(m):
                 col = m.group(1).strip()
                 rest = m.group(2).strip()
@@ -461,6 +491,10 @@ def view_agent(agent: AgentStatus, env: dict, schemas: list) -> dict:
                 r'(ORDER\s+BY\s+\w+(?:\.\w+)?\s+(?:DESC|ASC))\s*\)',
                 r'\1 LIMIT 1)', view_def, flags=re.IGNORECASE
             )
+
+            # BIT column comparisons (is_xxx=1 -> is_xxx=TRUE)
+            view_def = re.sub(r'(\bis_\w+)\s*=\s*1\b', r'\1 = TRUE', view_def, flags=re.IGNORECASE)
+            view_def = re.sub(r'(\bis_\w+)\s*=\s*0\b', r'\1 = FALSE', view_def, flags=re.IGNORECASE)
 
             # Remove SQL Server specifics
             view_def = re.sub(r'\bWITH\s+SCHEMABINDING\b', '', view_def, flags=re.IGNORECASE)

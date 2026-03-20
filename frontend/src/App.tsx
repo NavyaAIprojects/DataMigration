@@ -471,15 +471,26 @@ function App() {
                 <div className="stats-section">
                   <h4>Migration Results</h4>
                   <div className="stats-grid">
-                    <div className="stat-card blue"><div className="stat-value">{migrationJob.stats.schemas_created}</div><div className="stat-label">Schemas</div></div>
-                    <div className="stat-card blue"><div className="stat-value">{migrationJob.stats.tables_created}</div><div className="stat-label">Tables</div></div>
-                    <div className="stat-card blue"><div className="stat-value">{migrationJob.stats.rows_transferred?.toLocaleString()}</div><div className="stat-label">Rows</div></div>
-                    <div className="stat-card purple"><div className="stat-value">{migrationJob.stats.views_created}</div><div className="stat-label">Views</div></div>
-                    <div className="stat-card purple"><div className="stat-value">{migrationJob.stats.procedures_migrated}</div><div className="stat-label">Procedures</div></div>
-                    <div className="stat-card purple"><div className="stat-value">{migrationJob.stats.triggers_migrated}</div><div className="stat-label">Triggers</div></div>
-                    <div className="stat-card green"><div className="stat-value">{migrationJob.stats.validation_pct}%</div><div className="stat-label">Validated</div></div>
-                    <div className="stat-card green"><div className="stat-value">{migrationJob.stats.issues_auto_fixed}</div><div className="stat-label">Auto-Fixed</div></div>
-                    <div className="stat-card green"><div className="stat-value">{migrationJob.stats.issues_human_resolved}</div><div className="stat-label">Human Resolved</div></div>
+                    {(() => {
+                      const s = migrationJob.stats;
+                      const src = sourceInfo || {};
+                      const tablesOk = !src.table_count || s.tables_created >= src.table_count;
+                      const viewsOk = !src.view_count || s.views_created >= src.view_count;
+                      const procsOk = !src.proc_count || s.procedures_migrated >= src.proc_count;
+                      const triggersOk = !src.trigger_count || s.triggers_migrated >= src.trigger_count;
+                      const validOk = s.validation_pct === 100;
+                      return (<>
+                        <div className="stat-card blue"><div className="stat-value">{s.schemas_created}</div><div className="stat-label">Schemas</div></div>
+                        <div className={`stat-card ${tablesOk ? "blue" : "red"}`}><div className="stat-value">{s.tables_created}{!tablesOk && src.table_count ? `/${src.table_count}` : ""}</div><div className="stat-label">Tables</div></div>
+                        <div className="stat-card blue"><div className="stat-value">{s.rows_transferred?.toLocaleString()}</div><div className="stat-label">Rows</div></div>
+                        <div className={`stat-card ${viewsOk ? "purple" : "red"}`}><div className="stat-value">{s.views_created}{!viewsOk && src.view_count ? `/${src.view_count}` : ""}</div><div className="stat-label">Views</div></div>
+                        <div className={`stat-card ${procsOk ? "purple" : "red"}`}><div className="stat-value">{s.procedures_migrated}{!procsOk && src.proc_count ? `/${src.proc_count}` : ""}</div><div className="stat-label">Procedures</div></div>
+                        <div className={`stat-card ${triggersOk ? "purple" : "red"}`}><div className="stat-value">{s.triggers_migrated}{!triggersOk && src.trigger_count ? `/${src.trigger_count}` : ""}</div><div className="stat-label">Triggers</div></div>
+                        <div className={`stat-card ${validOk ? "green" : "red"}`}><div className="stat-value">{s.validation_pct}%</div><div className="stat-label">Validated</div></div>
+                        <div className="stat-card green"><div className="stat-value">{s.issues_auto_fixed}</div><div className="stat-label">Auto-Fixed</div></div>
+                        <div className="stat-card green"><div className="stat-value">{s.issues_human_resolved}</div><div className="stat-label">Human Resolved</div></div>
+                      </>);
+                    })()}
                     <div className="stat-card orange"><div className="stat-value">{elapsed}</div><div className="stat-label">Time Taken</div></div>
                     <div className="stat-card orange"><div className="stat-value">${migrationJob.stats.estimated_cost_usd}</div><div className="stat-label">Est. Cost</div></div>
                     <div className="stat-card orange"><div className="stat-value">{migrationJob.stats.tokens_used?.toLocaleString()}</div><div className="stat-label">Tokens</div></div>

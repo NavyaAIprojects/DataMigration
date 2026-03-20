@@ -413,19 +413,21 @@ def view_agent(agent: AgentStatus, env: dict, schemas: list) -> dict:
                 part = m.group(1).strip().upper()
                 arg1, arg2 = m.group(2).strip(), m.group(3).strip()
                 if part == 'YEAR':
-                    return f'FLOOR(DATEDIFF({arg2},{arg1})/365)'
+                    return f'FLOOR(DATEDIFF(DAY, {arg1}, {arg2}) / 365)'
                 elif part == 'MONTH':
-                    return f'FLOOR(DATEDIFF({arg2},{arg1})/30)'
-                return f'DATEDIFF({arg2},{arg1})'
+                    return f'FLOOR(DATEDIFF(DAY, {arg1}, {arg2}) / 30)'
+                return f'DATEDIFF(DAY, {arg1}, {arg2})'
 
             view_def = re.sub(
-                r'\bDATEDIFF\(\s*(YEAR|MONTH|DAY)\s*,\s*([^,]+?)\s*,\s*([^)]+?)\s*\)',
+                r'\bDATEDIFF\(\s*(YEAR|MONTH|DAY)\s*,\s*([^,]+?)\s*,\s*((?:[^()]+|\([^()]*\))+)\s*\)',
                 fix_datediff, view_def, flags=re.IGNORECASE
             )
 
-            # String concat
-            pattern = r"(\w+(?:\.\w+)?)\s*\+\s*'([^']*)'\s*\+\s*(\w+(?:\.\w+)?)"
-            view_def = re.sub(pattern, r"CONCAT(\1,'\2',\3)", view_def)
+            # String concat: replace T-SQL '+' with Spark SQL '||'
+            # Handle patterns like: expr + 'literal' + expr
+            # Use || which is Spark SQL's concat operator
+            view_def = re.sub(r"(\w+(?:\.\w+)?)\s*\+\s*'", r"\1 || '", view_def)
+            view_def = re.sub(r"'\s*\+\s*(\w+(?:\.\w+)?)", r"' || \1", view_def)
 
             # TOP N -> remove (add LIMIT later)
             view_def = re.sub(r'\bSELECT\s+TOP\s+(\d+)\b', r'SELECT', view_def, flags=re.IGNORECASE)
@@ -433,10 +435,6 @@ def view_agent(agent: AgentStatus, env: dict, schemas: list) -> dict:
                 r'(ORDER\s+BY\s+\w+(?:\.\w+)?\s+(?:DESC|ASC))\s*\)',
                 r'\1 LIMIT 1)', view_def, flags=re.IGNORECASE
             )
-
-            # BIT comparisons
-            view_def = re.sub(r'=\s*1\b', '=TRUE', view_def)
-            view_def = re.sub(r'=\s*0\b', '=FALSE', view_def)
 
             # Remove SQL Server specifics
             view_def = re.sub(r'\bWITH\s+SCHEMABINDING\b', '', view_def, flags=re.IGNORECASE)
